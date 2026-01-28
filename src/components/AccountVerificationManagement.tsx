@@ -4,6 +4,7 @@ import { supabase } from '../utils/supabase/client';
 import { toast } from 'sonner@2.0.3';
 import { createSmartAccount } from '../utils/biconomy/smartAccount';
 import { getHierarchyUserIds } from '../utils/api/query-helpers';
+import { isBiconomyEnabled } from '../utils/biconomySettings';
 import { useAuth } from '../contexts/AuthContext';
 
 interface Verification {
@@ -95,6 +96,34 @@ export function AccountVerificationManagement() {
     setProcessingId(verification.verification_id);
 
     try {
+      // Biconomy 활성화 여부 확인
+      const biconomyEnabled = await isBiconomyEnabled();
+      if (!biconomyEnabled) {
+        // Step 1: 기존 지갑이 있는지 확인
+        const { data: existingWallets, error: walletCheckError } = await supabase
+          .from('wallets')
+          .select('*')
+          .eq('user_id', verification.user_id);
+
+        if (walletCheckError) throw walletCheckError;
+
+        // Step 2: Smart Account 없이 바로 인증 상태만 업데이트
+        const { error: updateError } = await supabase
+          .from('account_verifications')
+          .update({
+            status: 'verified',
+            verified_at: new Date().toISOString(),
+          })
+          .eq('verification_id', verification.verification_id);
+
+        if (updateError) throw updateError;
+
+        toast.success('계좌인증 승인 완료!');
+        await fetchVerifications();
+        return;
+      }
+
+      // Biconomy 활성화된 경우 - Smart Account 생성
       // Step 1: 먼저 기존 지갑이 있는지 확인
       const { data: existingWallets, error: walletCheckError } = await supabase
         .from('wallets')

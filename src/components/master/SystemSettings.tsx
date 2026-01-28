@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, RefreshCw, Shield, Bell, Database, Globe, AlertTriangle, Check } from "lucide-react";
+import { Save, RefreshCw, Shield, Bell, Database, Globe, AlertTriangle, Check, Zap } from "lucide-react";
 import { NeonCard } from "../NeonCard";
 import { supabase } from "../../utils/supabase/client";
 import { toast } from "sonner@2.0.3";
@@ -31,6 +31,7 @@ interface SystemSettings {
   maintenance_mode: boolean;
   allow_new_registrations: boolean;
   api_rate_limit: number;
+  biconomy_enabled: boolean;
   
   // 네트워크 설정
   default_network: string;
@@ -55,6 +56,7 @@ const DEFAULT_SETTINGS: SystemSettings = {
   maintenance_mode: false,
   allow_new_registrations: true,
   api_rate_limit: 100,
+  biconomy_enabled: false,
   default_network: 'base',
   supported_networks: ['ethereum', 'polygon', 'base', 'arbitrum'],
 };
@@ -73,20 +75,21 @@ export function SystemSettings() {
     try {
       setLoading(true);
       
-      // system_settings 테이블에서 설정 로드
+      // system_settings 테이블에서 'all_settings' 키로 저장된 값 조회
       const { data, error } = await supabase
         .from('system_settings')
-        .select('*')
+        .select('value')
+        .eq('key', 'all_settings')
         .single();
 
       if (error && error.code !== 'PGRST116') { // PGRST116 = No rows found
         throw error;
       }
 
-      if (data) {
+      if (data && data.value) {
         setSettings({
           ...DEFAULT_SETTINGS,
-          ...data,
+          ...data.value,
         });
       }
     } catch (error) {
@@ -101,12 +104,12 @@ export function SystemSettings() {
     try {
       setSaving(true);
 
-      // system_settings 테이블에 저장 (upsert)
+      // system_settings 테이블에 key-value 형태로 저장
       const { error } = await supabase
         .from('system_settings')
         .upsert({
-          id: 1, // 단일 설정 레코드
-          ...settings,
+          key: 'all_settings',
+          value: settings,
           updated_at: new Date().toISOString(),
         });
 
@@ -152,32 +155,13 @@ export function SystemSettings() {
           <h2 className="text-cyan-400 mb-2">시스템 설정</h2>
           <p className="text-slate-400 text-sm">전역 시스템 설정 및 정책 관리</p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
-          >
-            <RefreshCw className="w-4 h-4" />
-            초기화
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {saving ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                저장 중...
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" />
-                저장
-              </>
-            )}
-          </button>
-        </div>
+        <button
+          onClick={handleReset}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+          초기화
+        </button>
       </div>
 
       {/* Tabs */}
@@ -500,6 +484,26 @@ export function SystemSettings() {
                 >
                   <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
                     settings.allow_new_registrations ? 'translate-x-6' : ''
+                  }`}></div>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+                <div>
+                  <p className="text-purple-400 flex items-center gap-2">
+                    <Zap className="w-4 h-4" />
+                    Biconomy 사용 활성화
+                  </p>
+                  <p className="text-slate-500 text-sm mt-1">Smart Account 및 Supertransaction 기능 사용</p>
+                </div>
+                <button
+                  onClick={() => setSettings({ ...settings, biconomy_enabled: !settings.biconomy_enabled })}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    settings.biconomy_enabled ? 'bg-purple-500' : 'bg-slate-600'
+                  }`}
+                >
+                  <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                    settings.biconomy_enabled ? 'translate-x-6' : ''
                   }`}></div>
                 </button>
               </div>
