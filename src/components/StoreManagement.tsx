@@ -144,12 +144,7 @@ export function StoreManagement() {
       fetchStores();
     } catch (error: any) {
       console.error('❌ Error:', error);
-      
-      if (error.message.includes('invalid email') || error.message.includes('invalid')) {
-        toast.error('유효하지 않은 이메일 형식입니다. 실제 도메인을 사용해주세요 (예: @gmail.com, @naver.com)');
-      } else {
-        toast.error(error.message || '가맹점 생성 중 오류가 발생했습니다');
-      }
+      toast.error('가맹점 생성 중 오류가 발생했습니다');
     }
   };
 
