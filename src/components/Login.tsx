@@ -18,22 +18,18 @@ export function Login({ onLoginSuccess }: LoginProps) {
     setIsLoading(true);
 
     try {
-      const user = await login(email, password);
+      const user = await login(email, password, true);
       toast.success('로그인 성공');
       
-      // onLoginSuccess 먼저 호출하여 상태 업데이트
-      onLoginSuccess?.();
+      if (user.role === 'master') {
+        window.location.hash = '#master';
+      } else if (['center', 'agency', 'store', 'admin'].includes(user.role)) {
+        window.location.hash = '#admin';
+      } else {
+        window.location.hash = '';
+      }
       
-      // 약간의 딜레이 후 라우팅 (상태 업데이트 완료 대기)
-      setTimeout(() => {
-        if (user.role === 'master') {
-          window.location.hash = '#master';
-        } else if (['center', 'agency', 'store', 'admin'].includes(user.role)) {
-          window.location.hash = '#admin';
-        } else {
-          window.location.hash = '';
-        }
-      }, 50);
+      onLoginSuccess?.();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '로그인 실패');
     } finally {
@@ -109,6 +105,22 @@ export function Login({ onLoginSuccess }: LoginProps) {
               )}
             </button>
           </form>
+
+          <div className="mt-6 text-center border-t border-slate-700/50 pt-6">
+            <a 
+              href="#" 
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.hash = '';
+              }}
+              className="inline-flex items-center gap-2 text-slate-400 hover:text-cyan-400 text-sm transition-colors"
+            >
+              <span>사용자 페이지로 이동</span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              </svg>
+            </a>
+          </div>
         </div>
       </div>
     </div>

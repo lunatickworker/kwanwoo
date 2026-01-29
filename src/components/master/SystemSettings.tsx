@@ -5,6 +5,10 @@ import { supabase } from "../../utils/supabase/client";
 import { toast } from "sonner@2.0.3";
 
 interface SystemSettings {
+  // Biconomy 설정
+  biconomy_enabled: boolean;
+  biconomy_api_key?: string;
+  
   // 가스 정책
   gas_sponsorship_enabled: boolean;
   max_gas_limit: string;
@@ -31,7 +35,6 @@ interface SystemSettings {
   maintenance_mode: boolean;
   allow_new_registrations: boolean;
   api_rate_limit: number;
-  biconomy_enabled: boolean;
   
   // 네트워크 설정
   default_network: string;
@@ -39,6 +42,8 @@ interface SystemSettings {
 }
 
 const DEFAULT_SETTINGS: SystemSettings = {
+  biconomy_enabled: false,
+  biconomy_api_key: '',
   gas_sponsorship_enabled: true,
   max_gas_limit: '500000',
   gas_buffer_percentage: 10,
@@ -56,7 +61,6 @@ const DEFAULT_SETTINGS: SystemSettings = {
   maintenance_mode: false,
   allow_new_registrations: true,
   api_rate_limit: 100,
-  biconomy_enabled: false,
   default_network: 'base',
   supported_networks: ['ethereum', 'polygon', 'base', 'arbitrum'],
 };
@@ -65,7 +69,7 @@ export function SystemSettings() {
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'gas' | 'security' | 'transaction' | 'notification' | 'system'>('gas');
+  const [activeTab, setActiveTab] = useState<'biconomy' | 'gas' | 'security' | 'transaction' | 'notification' | 'system'>('biconomy');
 
   useEffect(() => {
     loadSettings();
@@ -75,21 +79,20 @@ export function SystemSettings() {
     try {
       setLoading(true);
       
-      // system_settings 테이블에서 'all_settings' 키로 저장된 값 조회
+      // system_settings 테이블에서 설정 로드
       const { data, error } = await supabase
         .from('system_settings')
-        .select('value')
-        .eq('key', 'all_settings')
+        .select('*')
         .single();
 
       if (error && error.code !== 'PGRST116') { // PGRST116 = No rows found
         throw error;
       }
 
-      if (data && data.value) {
+      if (data) {
         setSettings({
           ...DEFAULT_SETTINGS,
-          ...data.value,
+          ...data,
         });
       }
     } catch (error) {
@@ -104,21 +107,21 @@ export function SystemSettings() {
     try {
       setSaving(true);
 
-      // system_settings 테이블에 key-value 형태로 저장
+      // system_settings 테이블에 저장 (upsert)
       const { error } = await supabase
         .from('system_settings')
         .upsert({
-          key: 'all_settings',
-          value: settings,
+          id: 1, // 단일 설정 레코드
+          ...settings,
           updated_at: new Date().toISOString(),
         });
 
       if (error) throw error;
 
-      toast.success('설정이 저장되었습니다');
-    } catch (error) {
+      toast.success('저장되었습니다.');
+    } catch (error: any) {
       console.error('설정 저장 실패:', error);
-      toast.error('설정 저장에 실패했습니다');
+      toast.error('저장에 실패했습니다.');
     } finally {
       setSaving(false);
     }
@@ -132,6 +135,7 @@ export function SystemSettings() {
   };
 
   const tabs = [
+    { id: 'biconomy', label: 'Biconomy', icon: Zap },
     { id: 'gas', label: '가스 정책', icon: Globe },
     { id: 'security', label: '보안', icon: Shield },
     { id: 'transaction', label: '거래', icon: Database },
@@ -155,13 +159,32 @@ export function SystemSettings() {
           <h2 className="text-cyan-400 mb-2">시스템 설정</h2>
           <p className="text-slate-400 text-sm">전역 시스템 설정 및 정책 관리</p>
         </div>
-        <button
-          onClick={handleReset}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
-        >
-          <RefreshCw className="w-4 h-4" />
-          초기화
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+            초기화
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                저장 중...
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                저장
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -187,6 +210,49 @@ export function SystemSettings() {
 
       {/* Content */}
       <div className="space-y-6">
+        {/* Biconomy Settings */}
+        {activeTab === 'biconomy' && (
+          <NeonCard>
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Zap className="w-6 h-6 text-cyan-400" />
+                <div>
+                  <h3 className="text-cyan-400">Biconomy 설정</h3>
+                  <p className="text-slate-400 text-sm">Biconomy 활성화 및 API 키 설정</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
+                <div>
+                  <p className="text-slate-300">Biconomy 활성화</p>
+                  <p className="text-slate-500 text-sm">Biconomy를 사용하여 트랜잭션 스폰서십 활성화</p>
+                </div>
+                <button
+                  onClick={() => setSettings({ ...settings, biconomy_enabled: !settings.biconomy_enabled })}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    settings.biconomy_enabled ? 'bg-cyan-500' : 'bg-slate-600'
+                  }`}
+                >
+                  <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                    settings.biconomy_enabled ? 'translate-x-6' : ''
+                  }`}></div>
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 text-sm mb-2">Biconomy API 키</label>
+                <input
+                  type="text"
+                  value={settings.biconomy_api_key}
+                  onChange={(e) => setSettings({ ...settings, biconomy_api_key: e.target.value })}
+                  className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  placeholder="Biconomy API 키 입력"
+                />
+              </div>
+            </div>
+          </NeonCard>
+        )}
+
         {/* Gas Policy Settings */}
         {activeTab === 'gas' && (
           <NeonCard>
@@ -488,26 +554,6 @@ export function SystemSettings() {
                 </button>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
-                <div>
-                  <p className="text-purple-400 flex items-center gap-2">
-                    <Zap className="w-4 h-4" />
-                    Biconomy 사용 활성화
-                  </p>
-                  <p className="text-slate-500 text-sm mt-1">Smart Account 및 Supertransaction 기능 사용</p>
-                </div>
-                <button
-                  onClick={() => setSettings({ ...settings, biconomy_enabled: !settings.biconomy_enabled })}
-                  className={`relative w-12 h-6 rounded-full transition-colors ${
-                    settings.biconomy_enabled ? 'bg-purple-500' : 'bg-slate-600'
-                  }`}
-                >
-                  <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                    settings.biconomy_enabled ? 'translate-x-6' : ''
-                  }`}></div>
-                </button>
-              </div>
-
               <div>
                 <label className="block text-slate-400 text-sm mb-2">API 요청 제한 (분당)</label>
                 <input
@@ -536,27 +582,6 @@ export function SystemSettings() {
             </div>
           </NeonCard>
         )}
-      </div>
-
-      {/* Save Button - Fixed at bottom */}
-      <div className="sticky bottom-0 bg-gradient-to-t from-slate-900 via-slate-900 to-transparent pt-6">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-cyan-500 to-purple-500 hover:from-cyan-600 hover:to-purple-600 text-white rounded-lg transition-colors disabled:opacity-50"
-        >
-          {saving ? (
-            <>
-              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-              저장 중...
-            </>
-          ) : (
-            <>
-              <Check className="w-5 h-5" />
-              설정 저장
-            </>
-          )}
-        </button>
       </div>
     </div>
   );

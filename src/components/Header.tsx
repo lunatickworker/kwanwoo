@@ -1,4 +1,4 @@
-import { User, LogOut, UserPlus, FileCheck, ShoppingCart, MessageSquare, Wallet, ArrowLeftRight } from "lucide-react";
+import { User, LogOut, UserPlus, FileCheck, ShoppingCart, MessageSquare, Wallet, ArrowLeftRight, ArrowDownCircle } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { useState, useEffect } from "react";
 import { supabase } from "../utils/supabase/client";
@@ -23,6 +23,7 @@ export function Header({ onNavigate }: HeaderProps) {
   const [verificationNotifications, setVerificationNotifications] = useState<number>(0);
   const [orderNotifications, setOrderNotifications] = useState<number>(0);
   const [supportNotifications, setSupportNotifications] = useState<number>(0);
+  const [depositNotifications, setDepositNotifications] = useState<number>(0); // 가맹점 입금 알림
   const [showWalletMoveModal, setShowWalletMoveModal] = useState(false);
   const [moveDirection, setMoveDirection] = useState<'hot-to-cold' | 'cold-to-hot'>('hot-to-cold');
   const [moveAmount, setMoveAmount] = useState('');
@@ -85,35 +86,59 @@ export function Header({ onNavigate }: HeaderProps) {
 
     const fetchWalletBalances = async () => {
       try {
-        const { data, error } = await supabase
+        // 1. 관리자의 모든 지갑 조회 (coin_type 포함)
+        const { data: wallets, error: walletsError } = await supabase
           .from('wallets')
-          .select('balance, wallet_type')
+          .select('balance, wallet_type, coin_type')
           .eq('user_id', user.id)
           .eq('status', 'active');
 
-        if (error) throw error;
+        if (walletsError) throw walletsError;
 
-        const balances = data?.reduce((acc, wallet) => {
-          const balance = parseFloat(wallet.balance || '0');
+        if (!wallets || wallets.length === 0) {
+          setWalletBalances({ hot: 0, cold: 0, total: 0 });
+          return;
+        }
+
+        // 2. 모든 활성 코인의 시세 조회
+        const { data: prices, error: pricesError } = await supabase
+          .from('supported_tokens')
+          .select('symbol, price_krw')
+          .eq('is_active', true);
+
+        if (pricesError) throw pricesError;
+
+        // 3. 시세 맵 생성 (빠른 조회를 위해)
+        const priceMap = new Map<string, number>();
+        prices?.forEach(p => {
+          priceMap.set(p.symbol, Number(p.price_krw || 0));
+        });
+
+        // 4. 각 지갑의 balance × price_krw 계산 후 합산
+        const balances = wallets.reduce((acc, wallet) => {
+          const priceKrw = priceMap.get(wallet.coin_type) || 0;
+          const balanceKrw = Number(wallet.balance || 0) * priceKrw;
+
           if (wallet.wallet_type === 'hot') {
-            acc.hot += balance;
+            acc.hot += balanceKrw;
           } else if (wallet.wallet_type === 'cold') {
-            acc.cold += balance;
+            acc.cold += balanceKrw;
           }
-          acc.total += balance;
+          acc.total += balanceKrw;
           return acc;
         }, { hot: 0, cold: 0, total: 0 });
 
-        setWalletBalances(balances || { hot: 0, cold: 0, total: 0 });
+        setWalletBalances(balances);
       } catch (error) {
         console.error('지갑 잔액 조회 실패:', error);
+        setWalletBalances({ hot: 0, cold: 0, total: 0 });
       }
     };
 
     fetchWalletBalances();
 
-    // 실시간 구독
-    const subscription = supabase
+    // 실시간 구독 - wallets 테이블 변경 감지
+    const walletSubscription = supabase
       .channel(`wallet_${user.id}`)
       .on(
         'postgres_changes',
@@ -129,8 +154,25 @@ export function Header({ onNavigate }: HeaderProps) {
       )
       .subscribe();
 
+    // 실시간 구독 - supported_tokens 테이블 변경 감지 (가격 업데이트)
+    const priceSubscription = supabase
+      .channel('price_updates')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'supported_tokens'
+        },
+        () => {
+          fetchWalletBalances();
+        }
+      )
+      .subscribe();
+
     return () => {
-      subscription.unsubscribe();
+      walletSubscription.unsubscribe();
+      priceSubscription.unsubscribe();
     };
   }, [showWallet, user?.id]);
 
@@ -143,12 +185,13 @@ export function Header({ onNavigate }: HeaderProps) {
         // 계층 구조에 따라 하위 사용자 ID 조회
         const hierarchyUserIds = await getHierarchyUserIds(user.id, user.role);
 
-        // 회원가입 알림 (신규 가입자 - 24시간 이내, 하위만)
+        // 회원가입 알림 (승인대기 상태만, 하위만)
         const { count: signupCount } = await supabase
           .from('users')
-          .select('*', { count: 'exact', head: true })
+          .select('user_id', { count: 'exact', head: true })
           .in('user_id', hierarchyUserIds)
-          .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+          .eq('is_active', false)
+          .eq('role', 'user'); // role='user'만 카운트
         
         setSignupNotifications(signupCount || 0);
 
@@ -172,6 +215,15 @@ export function Header({ onNavigate }: HeaderProps) {
 
         // 고객센터 알림 (임시 - 실제로는 support_tickets 테이블에서)
         setSupportNotifications(0);
+
+        // 가맹점 입금 알림 (센터만)
+        const { count: depositCount } = await supabase
+          .from('deposits')
+          .select('*', { count: 'exact', head: true })
+          .in('user_id', hierarchyUserIds)
+          .eq('status', 'pending');
+        
+        setDepositNotifications(depositCount || 0);
       } catch (error) {
         console.error('알림 조회 실패:', error);
       }
@@ -195,13 +247,13 @@ export function Header({ onNavigate }: HeaderProps) {
       )
       .subscribe();
 
-    // 실시간 구독: 신규 회원가입
+    // 실시간 구독: 신규 회원가입 및 상태 변경
     const usersSub = supabase
       .channel('users_notifications')
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*', // INSERT와 UPDATE 모두 감지
           schema: 'public',
           table: 'users'
         },
@@ -227,6 +279,22 @@ export function Header({ onNavigate }: HeaderProps) {
       )
       .subscribe();
 
+    // 실시간 구독: 가맹점 입금 요청
+    const depositSub = supabase
+      .channel('deposit_notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'deposits'
+        },
+        () => {
+          fetchNotifications();
+        }
+      )
+      .subscribe();
+
     // 10초마다 갱신 (fallback)
     const interval = setInterval(fetchNotifications, 10000);
     
@@ -234,9 +302,63 @@ export function Header({ onNavigate }: HeaderProps) {
       accountVerificationSub.unsubscribe();
       usersSub.unsubscribe();
       depositWithdrawalSub.unsubscribe();
+      depositSub.unsubscribe();
       clearInterval(interval);
     };
   }, [showNotifications, user?.id, user?.role]);
+
+  // 가맹점 입금 알림 (가맹점만)
+  useEffect(() => {
+    if (!isStore || !user?.id) return;
+
+    const fetchStoreDepositNotifications = async () => {
+      try {
+        console.log('🏪 가맹점 입금 알림 조회:', { userId: user.id });
+
+        // 계층 구조의 하위 사용자 ID 조회
+        const hierarchyUserIds = await getHierarchyUserIds(user.id, user.role);
+        
+        // viewed_by_store = false인 입금만 카운트
+        const { count: newDepositCount } = await supabase
+          .from('deposits')
+          .select('*', { count: 'exact', head: true })
+          .in('user_id', hierarchyUserIds)
+          .eq('viewed_by_store', false);
+        
+        console.log('📥 미확인 입금:', newDepositCount);
+        setDepositNotifications(newDepositCount || 0);
+      } catch (error) {
+        console.error('❌ 가맹점 입금 알림 조회 실패:', error);
+      }
+    };
+
+    fetchStoreDepositNotifications();
+
+    // 실시간 구독: 입금 발생 또는 viewed 상태 변경 시 알림
+    const depositSub = supabase
+      .channel('store_deposit_notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',  // INSERT, UPDATE 모두 감지
+          schema: 'public',
+          table: 'deposits'
+        },
+        () => {
+          console.log('📥 입금 데이터 변경 감지!');
+          fetchStoreDepositNotifications();
+        }
+      )
+      .subscribe();
+
+    // 10초마다 갱신 (fallback)
+    const interval = setInterval(fetchStoreDepositNotifications, 10000);
+    
+    return () => {
+      depositSub.unsubscribe();
+      clearInterval(interval);
+    };
+  }, [isStore, user?.id, user?.role]);
 
   return (
     <>
@@ -335,7 +457,37 @@ export function Header({ onNavigate }: HeaderProps) {
                   </span>
                 )}
               </button>
+
+              {/* 가맹점 입금 알림 (노란색) */}
+              <button 
+                className="relative p-2.5 text-slate-400 hover:text-slate-300 transition-colors"
+                onClick={() => onNavigate('deposits')}
+                title="가맹점 입금 알림"
+              >
+                <ArrowDownCircle className="w-5 h-5" />
+                {depositNotifications > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-yellow-500 rounded-full text-[10px] text-white flex items-center justify-center px-1">
+                    {depositNotifications}
+                  </span>
+                )}
+              </button>
             </>
+          )}
+
+          {/* 가맹점 입금 알림 (가맹점만) */}
+          {isStore && (
+            <button 
+              className="relative p-2.5 text-slate-400 hover:text-slate-300 transition-colors"
+              onClick={() => onNavigate('deposit-withdrawal')}
+              title="입금 알림"
+            >
+              <ArrowDownCircle className="w-5 h-5" />
+              {depositNotifications > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-cyan-500 rounded-full text-[10px] text-white flex items-center justify-center px-1">
+                  {depositNotifications}
+                </span>
+              )}
+            </button>
           )}
 
           {/* 사용자 프로필 */}

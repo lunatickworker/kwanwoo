@@ -86,7 +86,14 @@ export function CoinManagement() {
     try {
       // CoinGecko API로 실시간 가격 조회
       const response = await fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=usd-coin,tether,dai&vs_currencies=usd,krw`
+        `https://api.coingecko.com/api/v3/simple/price?ids=usd-coin,tether,dai&vs_currencies=usd,krw`,
+        {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json'
+          },
+          mode: 'cors'
+        }
       );
       
       if (!response.ok) {

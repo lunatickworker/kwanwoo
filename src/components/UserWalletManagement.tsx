@@ -10,12 +10,16 @@ interface UserData {
   user_id: string;
   username: string;
   email: string;
-  account_verification_status: string;
+  account_verifications?: Array<{ status: string }>;  // 조인된 데이터
   status: string;
+  is_active: boolean;  // 승인 여부
   created_at: string;
   last_login: string;
   role?: string;
   level?: string;
+  parent_user_id?: string;
+  tenant_id?: string;
+  parent?: { username: string } | null;  // Supabase 조인 형식 (parent:users!parent_user_id(username))
 }
 
 interface WalletData {
@@ -34,9 +38,9 @@ interface CoinData {
 
 interface Stats {
   totalUsers: number;
-  verifiedUsers: number;
-  totalWallets: number;
-  totalValue: number;
+  pendingApproval: number; // 승인 대기
+  totalCoins: number;      // 총 코인 개수 (balance 합)
+  totalValue: number;      // 원화 환산 가치
 }
 
 export function UserWalletManagement() {
@@ -44,16 +48,19 @@ export function UserWalletManagement() {
   const [users, setUsers] = useState<UserData[]>([]);
   const [selectedUser, setSelectedUser] = useState<UserData | null>(null);
   const [userWallets, setUserWallets] = useState<WalletData[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [parentFilter, setParentFilter] = useState("all"); // 소속별 필터
   const [activeTab, setActiveTab] = useState<"info" | "wallets">("info");
+  const [userListTab, setUserListTab] = useState<"members" | "stores">("members"); // 회원/가맹점 탭
   const [stats, setStats] = useState<Stats>({
     totalUsers: 0,
-    verifiedUsers: 0,
-    totalWallets: 0,
+    pendingApproval: 0,
+    totalCoins: 0,
     totalValue: 0
   });
+  const [isStatsLoading, setIsStatsLoading] = useState(false); // 통계 로딩 상태 추가
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [showAddCoinModal, setShowAddCoinModal] = useState(false);
   const [availableCoins, setAvailableCoins] = useState<string[]>([]);
@@ -156,7 +163,6 @@ export function UserWalletManagement() {
 
   const fetchData = async () => {
     setIsLoading(true);
-    
     try {
       // Backend API로 사용자 데이터 가져오기 (RLS 우회)
       const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
@@ -196,12 +202,53 @@ export function UserWalletManagement() {
       const result = await response.json();
 
       if (result.success && result.users) {
-        // 사용자 목록을 먼저 표시 (즉시 로딩 완료)
-        setUsers(result.users);
-        setIsLoading(false);
+        // 센터 관리자 본인은 목록에서 제외
+        const filteredUsers = result.users.filter((u: UserData) => u.user_id !== user?.id);
         
-        // 통계는 백그라운드에서 계산 (비동기)
-        fetchStats(result.users);
+        // 🎯 STEP 1: 사용자 목록을 즉시 표시 (로딩 해제)
+        setUsers(filteredUsers);
+        setIsLoading(false); // ⚡ 여기서 먼저 로딩 해제하여 즉시 표시
+        
+        // 🎯 STEP 2: parent 정보는 백그라운드에서 비동기 처리
+        const usersWithoutParent = filteredUsers.filter(u => u.parent_user_id && !u.parent);
+        if (usersWithoutParent.length > 0) {
+          console.log('⚠️ parent 정보가 없는 사용자:', usersWithoutParent.length, '명 - 백그라운드 조회 시작');
+          
+          // 비동기로 parent 정보 조회 (UI 블로킹 없음)
+          (async () => {
+            try {
+              const parentIds = [...new Set(usersWithoutParent.map(u => u.parent_user_id).filter(Boolean))];
+              
+              const { data: parents } = await supabase
+                .from('users')
+                .select('user_id, username')
+                .in('user_id', parentIds);
+              
+              if (parents && parents.length > 0) {
+                const parentMap = new Map(parents.map(p => [p.user_id, p]));
+                
+                // 업데이트된 사용자 목록 생성
+                const updatedUsers = filteredUsers.map(u => {
+                  if (u.parent_user_id && !u.parent) {
+                    const parentInfo = parentMap.get(u.parent_user_id);
+                    if (parentInfo) {
+                      return { ...u, parent: { username: parentInfo.username } };
+                    }
+                  }
+                  return u;
+                });
+                
+                setUsers(updatedUsers);
+                console.log('✅ Parent 정보 업데이트 완료');
+              }
+            } catch (error) {
+              console.error('❌ Fallback parent 조회 실패:', error);
+            }
+          })();
+        }
+        
+        // 🎯 STEP 3: 통계는 백그라운드에서 계산 (별도 비동기)
+        fetchStats(filteredUsers);
       } else {
         console.error('❌ Backend API error:', result);
         toast.error(result.error || '사용자 데이터를 가져오는데 실패했습니다');
@@ -215,10 +262,14 @@ export function UserWalletManagement() {
   };
 
   const fetchStats = async (usersData: UserData[]) => {
+    setIsStatsLoading(true); // 통계 로딩 시작
     try {
-      // 통계 계산
-      const totalUsers = usersData.length;
-      const verifiedUsers = usersData.filter((u: any) => u.account_verification_status === 'verified').length;
+      // 통계 계산 - role='user'인 일반 사용자만 카운트 (관리자 제외)
+      const regularUsers = usersData.filter((u: any) => u.role === 'user');
+      const totalUsers = regularUsers.length;
+      
+      // 승인 대기 사용자 (is_active가 false)
+      const pendingApproval = regularUsers.filter((u: any) => u.is_active === false).length;
       
       // 사용자들의 user_id 배열
       const userIds = usersData.map((u: any) => u.user_id);
@@ -226,31 +277,56 @@ export function UserWalletManagement() {
       if (userIds.length === 0) {
         setStats({
           totalUsers: 0,
-          verifiedUsers: 0,
-          totalWallets: 0,
+          pendingApproval: 0,
+          totalCoins: 0,
           totalValue: 0
         });
+        setIsStatsLoading(false);
         return;
       }
       
-      // 지갑 데이터 가져오기 (배치 최적화)
-      const { data: walletsData } = await supabase
-        .from('wallets')
-        .select('balance, user_id')
-        .in('user_id', userIds);
+      // ⚡ 최적화: 병렬로 데이터 조회
+      const [walletsResult, coinsResult] = await Promise.all([
+        supabase
+          .from('wallets')
+          .select('balance, coin_type')
+          .in('user_id', userIds),
+        supabase
+          .from('coins')
+          .select('symbol, krw_price')
+      ]);
       
-      const totalWallets = walletsData?.length || 0;
-      const totalValue = walletsData?.reduce((sum, w) => sum + (w.balance || 0), 0) || 0;
+      const walletsData = walletsResult.data;
+      const coinsData = coinsResult.data;
+      
+      // 총 코인 개수 (모든 balance 합산)
+      const totalCoins = walletsData?.reduce((sum, w) => sum + (parseFloat(w.balance) || 0), 0) || 0;
+      
+      // 코인별 시세 맵 생성
+      const coinPriceMap = new Map<string, number>();
+      coinsData?.forEach((coin) => {
+        coinPriceMap.set(coin.symbol, parseFloat(coin.krw_price) || 0);
+      });
+      
+      // 총 자산 가치 계산 (코인 개수 × 원화 시세)
+      let totalValue = 0;
+      walletsData?.forEach((wallet) => {
+        const balance = parseFloat(wallet.balance) || 0;
+        const price = coinPriceMap.get(wallet.coin_type) || 0;
+        totalValue += balance * price;
+      });
 
       setStats({
         totalUsers,
-        verifiedUsers,
-        totalWallets,
-        totalValue
+        pendingApproval,
+        totalCoins: Math.round(totalCoins * 100) / 100, // 소수점 2자리
+        totalValue: Math.round(totalValue)
       });
     } catch (error) {
       console.error('Error fetching stats:', error);
       // 통계 에러는 조용히 처리 (사용자 목록은 이미 표시됨)
+    } finally {
+      setIsStatsLoading(false); // 통계 로딩 완료
     }
   };
 
@@ -318,7 +394,9 @@ export function UserWalletManagement() {
     });
 
     try {
-      const { isAvailable } = await checkEmailAvailability(email);
+      const isAvailable = await checkEmailAvailability(email);
+      
+      console.log('🔍 센터 회원추가 - 이메일 체크 결과:', isAvailable);
       
       setEmailValidation({
         isValid: true,
@@ -386,46 +464,25 @@ export function UserWalletManagement() {
         return;
       }
 
-      // 회원 생성
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: createUserForm.email,
-        password: createUserForm.password,
-        options: {
-          emailRedirectTo: undefined, // 이메일 확인 비활성화
-          data: {
-            username: createUserForm.username,
-            role: 'user',
-            parent_user_id: createUserForm.storeId,
-            phone_number: createUserForm.phoneNumber || null
-          }
-        }
-      });
-
-      if (authError) {
-        console.error('❌ Auth Error:', authError);
-        throw authError;
-      }
-
-      if (!authData.user) {
-        throw new Error('사용자 생성에 실패했습니다');
-      }
-
-      // 비밀번호 해시 생성
+      // 회원 생성 (Auth 없이 DB에만 저장)
+      const userId = self.crypto.randomUUID();
       const passwordHash = await bcrypt.hash(createUserForm.password, 10);
 
       // users 테이블에 사용자 정보 저장
       const { error: insertError } = await supabase
         .from('users')
         .insert({
-          user_id: authData.user.id,
+          user_id: userId,
           email: createUserForm.email,
           username: createUserForm.username,
-          password_hash: passwordHash, // 해시된 비밀번호 저장
+          password_hash: passwordHash,
           phone: createUserForm.phoneNumber || null,
+          referral_code: createUserForm.email.split('@')[0].toLowerCase(), // 이메일 @ 앞부분을 추천인 코드로
           role: 'user',
           level: 'Basic',
           parent_user_id: createUserForm.storeId,
           tenant_id: createUserForm.storeId, // 소속 가맹점을 tenant_id로 사용
+          status: 'active',
           is_active: true,
           kyc_status: 'pending',
         });
@@ -607,11 +664,14 @@ export function UserWalletManagement() {
     if (!selectedUser || !generatedPassword) return;
 
     try {
-      // users 테이블에 임시 비밀번호 저장 (해시화는 로그인 시 처리)
+      // 비밀번호 해시 생성
+      const passwordHash = await bcrypt.hash(generatedPassword, 10);
+      
+      // users 테이블에 임시 비밀번호 저장 (bcrypt 해시로 저장)
       const { error } = await supabase
         .from('users')
         .update({ 
-          password_hash: generatedPassword // 실제로는 bcrypt 해시 필요
+          password_hash: passwordHash
         })
         .eq('user_id', selectedUser.user_id);
 
@@ -748,11 +808,27 @@ export function UserWalletManagement() {
   };
 
   // 필터링된 사용자 목록
-  const filteredUsers = users.filter(user => {
-    const matchesSearch = user.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.email.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || user.status === statusFilter;
-    return matchesSearch && matchesStatus;
+  const filteredUsers = users.filter(userData => {
+    const matchesSearch = userData.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         userData.email.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus = statusFilter === 'all' || userData.status === statusFilter;
+    
+    // 가맹점 관리자는 회원만 표시 (탭 기능 없음)
+    if (user?.role === 'store') {
+      return matchesSearch && matchesStatus && userData.role === 'user';
+    }
+    
+    // 센터 관리자는 탭에 따라 회원/가맹점 필터링
+    const matchesTab = userListTab === 'members' 
+      ? userData.role === 'user'  // 회원만
+      : userData.role === 'store'; // 가맹점만
+    
+    // 소속별 필터링 (회원 탭일 때만 적용)
+    const matchesParent = userListTab === 'members' 
+      ? (parentFilter === 'all' || userData.parent_user_id === parentFilter)
+      : true;
+    
+    return matchesSearch && matchesStatus && matchesTab && matchesParent;
   });
 
   // 페이지네이션 계산
@@ -764,10 +840,15 @@ export function UserWalletManagement() {
   // 페이지 변경 시 첫 페이지로 리셋 (필터 변경 시)
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, itemsPerPage]);
+  }, [searchTerm, statusFilter, itemsPerPage, userListTab, parentFilter]);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
+  const getStatusColor = (user: UserData) => {
+    // is_active가 false면 승인 대기
+    if (!user.is_active) {
+      return 'text-yellow-400 bg-yellow-500/20 border-yellow-500/50';
+    }
+    
+    switch (user.status) {
       case 'active': return 'text-green-400 bg-green-500/20 border-green-500/50';
       case 'suspended': return 'text-yellow-400 bg-yellow-500/20 border-yellow-500/50';
       case 'blocked': return 'text-red-400 bg-red-500/20 border-red-500/50';
@@ -775,16 +856,23 @@ export function UserWalletManagement() {
     }
   };
 
-  const getStatusText = (status: string) => {
-    switch (status) {
+  const getStatusText = (user: UserData) => {
+    // is_active가 false면 승인 대기
+    if (!user.is_active) {
+      return '승인대기';
+    }
+    
+    switch (user.status) {
       case 'active': return '활성';
       case 'suspended': return '정지';
       case 'blocked': return '차단';
-      default: return status;
+      default: return user.status;
     }
   };
 
-  const getVerificationColor = (status: string) => {
+  const getVerificationColor = (status?: string) => {
+    if (!status) return 'text-slate-400 bg-slate-500/20';
+    
     switch (status) {
       case 'verified': return 'text-green-400 bg-green-500/20';
       case 'pending': return 'text-yellow-400 bg-yellow-500/20';
@@ -793,7 +881,9 @@ export function UserWalletManagement() {
     }
   };
 
-  const getVerificationText = (status: string) => {
+  const getVerificationText = (status?: string) => {
+    if (!status) return '-';
+    
     switch (status) {
       case 'verified': return '인증';
       case 'pending': return '대기';
@@ -816,18 +906,25 @@ export function UserWalletManagement() {
         </div>
 
         <div className="relative group">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-orange-500 to-red-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
           <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-            <p className="text-slate-400 text-sm mb-1">인증 완료</p>
-            <p className="text-green-400 text-2xl">{stats.verifiedUsers.toLocaleString()}</p>
+            <p className="text-slate-400 text-sm mb-1">승인 대기</p>
+            <p className="text-orange-400 text-2xl">{stats.pendingApproval.toLocaleString()}</p>
           </div>
         </div>
 
         <div className="relative group">
           <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
           <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-            <p className="text-slate-400 text-sm mb-1">총 지갑</p>
-            <p className="text-purple-400 text-2xl">{stats.totalWallets.toLocaleString()}</p>
+            <p className="text-slate-400 text-sm mb-1">총 코인 개수</p>
+            {isStatsLoading ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+                <span className="text-purple-400 text-lg">계산중...</span>
+              </div>
+            ) : (
+              <p className="text-purple-400 text-2xl">{stats.totalCoins.toLocaleString()}</p>
+            )}
           </div>
         </div>
 
@@ -835,7 +932,14 @@ export function UserWalletManagement() {
           <div className="absolute -inset-0.5 bg-gradient-to-r from-yellow-500 to-orange-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
           <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
             <p className="text-slate-400 text-sm mb-1">총 자산 가치</p>
-            <p className="text-yellow-400 text-2xl">₩{stats.totalValue.toLocaleString()}</p>
+            {isStatsLoading ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-5 h-5 text-yellow-400 animate-spin" />
+                <span className="text-yellow-400 text-lg">계산중...</span>
+              </div>
+            ) : (
+              <p className="text-yellow-400 text-2xl">₩{stats.totalValue.toLocaleString()}</p>
+            )}
           </div>
         </div>
       </div>
@@ -847,57 +951,104 @@ export function UserWalletManagement() {
           <div className="relative">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-xl opacity-20 blur"></div>
             <div className="relative bg-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-xl p-6 min-h-[600px]">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl text-cyan-400">사용자 목록</h2>
-                <div className="flex items-center gap-2">
-                  {user?.role === 'center' && (
-                    <button
-                      onClick={() => setShowCreateUserModal(true)}
-                      className="px-3 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-lg text-sm flex items-center gap-1.5 transition-all shadow-lg shadow-cyan-500/30"
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl text-cyan-400">사용자 목록</h2>
+                  <div className="flex items-center gap-2">
+                    {user?.role === 'center' && (
+                      <button
+                        onClick={() => setShowCreateUserModal(true)}
+                        className="px-3 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-lg text-sm flex items-center gap-1.5 transition-all shadow-lg shadow-cyan-500/30"
+                      >
+                        <UserPlus className="w-4 h-4" />
+                        회원 추가
+                      </button>
+                    )}
+                    <select
+                      value={itemsPerPage}
+                      onChange={(e) => setItemsPerPage(Number(e.target.value))}
+                      className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 focus:outline-none focus:border-cyan-500"
                     >
-                      <UserPlus className="w-4 h-4" />
-                      회원 추가
-                    </button>
-                  )}
-                  <select
-                    value={itemsPerPage}
-                    onChange={(e) => setItemsPerPage(Number(e.target.value))}
-                    className="px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-300 focus:outline-none focus:border-cyan-500"
-                  >
-                    <option value={20}>20개</option>
-                    <option value={30}>30개</option>
-                    <option value={50}>50개</option>
-                  </select>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-cyan-500"
-                  >
-                    <option value="all">전체</option>
-                    <option value="active">활성</option>
-                    <option value="suspended">정지</option>
-                    <option value="blocked">차단</option>
-                  </select>
+                      <option value={20}>20개</option>
+                      <option value={30}>30개</option>
+                      <option value={50}>50개</option>
+                    </select>
+                    <select
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-cyan-500"
+                    >
+                      <option value="all">전체</option>
+                      <option value="active">활성</option>
+                      <option value="suspended">정지</option>
+                      <option value="blocked">차단</option>
+                    </select>
+                  </div>
                 </div>
+
+                {/* 회원/가맹점 탭 - 센터 관리자만 표시 */}
+                {user?.role === 'center' && (
+                  <div className="flex gap-2 mb-4">
+                    <button
+                      onClick={() => setUserListTab('members')}
+                      className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        userListTab === 'members'
+                          ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-500/30'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      👤 회원
+                    </button>
+                    <button
+                      onClick={() => setUserListTab('stores')}
+                      className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        userListTab === 'stores'
+                          ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg shadow-purple-500/30'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      🏪 가맹점
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* 검색 */}
-              <div className="relative mb-4">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="사용자명 또는 이메일 검색..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 focus:outline-none focus:border-cyan-500"
-                />
+              {/* 검색 및 필터 */}
+              <div className="flex gap-2 mb-4">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="사용자명 또는 이메일 검색..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                
+                {/* 소속별 필터 (센터 관리자의 회원 탭일 때만 표시) */}
+                {user?.role === 'center' && userListTab === 'members' && (
+                  <select
+                    value={parentFilter}
+                    onChange={(e) => setParentFilter(e.target.value)}
+                    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 focus:outline-none focus:border-cyan-500 min-w-[160px]"
+                  >
+                    <option value="all">전체 소속</option>
+                    {stores.map(store => (
+                      <option key={store.user_id} value={store.user_id}>
+                        {store.username}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* 사용자 리스트 - 스크롤 없이 페이지네이션 */}
               <div className="space-y-1.5 min-h-[480px]">
                 {isLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+                  <div className="flex flex-col items-center justify-center py-20">
+                    <Loader2 className="w-12 h-12 text-cyan-400 animate-spin mb-4" />
+                    <p className="text-slate-400">사용자 목록을 불러오는 중...</p>
                   </div>
                 ) : currentUsers.length === 0 ? (
                   <div className="text-center py-12 text-slate-400">
@@ -916,15 +1067,46 @@ export function UserWalletManagement() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <p className="text-slate-300 text-sm font-medium truncate">{user.username}</p>
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="text-slate-300 text-sm font-medium truncate">{user.username}</p>
+                            {/* Role 배지 */}
+                            <span className={`px-1.5 py-0.5 rounded text-xs ${
+                              user.role === 'user' ? 'bg-blue-500/20 text-blue-400' :
+                              user.role === 'store' ? 'bg-purple-500/20 text-purple-400' :
+                              user.role === 'center' ? 'bg-orange-500/20 text-orange-400' :
+                              user.role === 'admin' ? 'bg-red-500/20 text-red-400' :
+                              user.role === 'master' ? 'bg-yellow-500/20 text-yellow-400' :
+                              'bg-slate-500/20 text-slate-400'
+                            }`}>
+                              {user.role === 'user' ? '회원' :
+                               user.role === 'store' ? '가맹점' :
+                               user.role === 'center' ? '센터' :
+                               user.role === 'admin' ? '관리자' :
+                               user.role === 'master' ? '마스터' : user.role}
+                            </span>
+                          </div>
                           <p className="text-slate-500 text-xs truncate">{user.email}</p>
+                          {/* 소속 정보 - 디버깅 */}
+                          {user.role === 'user' && (
+                            <p className="text-slate-400 text-xs mt-0.5">
+                              {user.parent?.username ? (
+                                <span className="truncate">🏪 소속: {user.parent.username}</span>
+                              ) : (
+                                <span className="text-slate-600 text-[10px] block">
+                                  parent_id: {user.parent_user_id?.substring(0, 8) || '없음'}... | 
+                                  parent: {user.parent ? JSON.stringify(user.parent) : 'null'} | 
+                                  type: {typeof user.parent}
+                                </span>
+                              )}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className={`px-1.5 py-0.5 rounded text-xs border ${getStatusColor(user.status)}`}>
-                            {getStatusText(user.status)}
+                          <span className={`px-1.5 py-0.5 rounded text-xs border ${getStatusColor(user)}`}>
+                            {getStatusText(user)}
                           </span>
-                          <span className={`px-1.5 py-0.5 rounded text-xs ${getVerificationColor(user.account_verification_status)}`}>
-                            {getVerificationText(user.account_verification_status)}
+                          <span className={`px-1.5 py-0.5 rounded text-xs ${getVerificationColor(user.account_verifications?.[0]?.status)}`}>
+                            {getVerificationText(user.account_verifications?.[0]?.status)}
                           </span>
                         </div>
                       </div>
@@ -1087,15 +1269,66 @@ export function UserWalletManagement() {
                         </div>
                         <div>
                           <p className="text-slate-400 text-sm mb-1">계좌증 상태</p>
-                          <span className={`inline-block px-3 py-1 rounded text-sm ${getVerificationColor(selectedUser.account_verification_status)}`}>
-                            {getVerificationText(selectedUser.account_verification_status)}
+                          <span className={`inline-block px-3 py-1 rounded text-sm ${getVerificationColor(selectedUser.account_verifications?.[0]?.status)}`}>
+                            {getVerificationText(selectedUser.account_verifications?.[0]?.status)}
                           </span>
                         </div>
                         <div>
-                          <p className="text-slate-400 text-sm mb-1">계정 상태</p>
-                          <span className={`inline-block px-3 py-1 rounded text-sm border ${getStatusColor(selectedUser.status)}`}>
-                            {getStatusText(selectedUser.status)}
-                          </span>
+                          <p className="text-slate-400 text-sm mb-1">계정은 상태</p>
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-block px-3 py-1 rounded text-sm border ${getStatusColor(selectedUser)}`}>
+                              {getStatusText(selectedUser)}
+                            </span>
+                            {!selectedUser.is_active && (
+                              <>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      const { error } = await supabase
+                                        .from('users')
+                                        .update({ is_active: true })
+                                        .eq('user_id', selectedUser.user_id);
+                                      
+                                      if (error) throw error;
+                                      
+                                      toast.success('사용자가 승인되었습니다');
+                                      setSelectedUser({ ...selectedUser, is_active: true });
+                                      await fetchData();
+                                    } catch (error) {
+                                      toast.error('승인 처리 실패');
+                                    }
+                                  }}
+                                  className="px-3 py-1 bg-green-500/20 text-green-400 rounded text-sm hover:bg-green-500/30 transition-all border border-green-500/50"
+                                >
+                                  승인하기
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm('승인을 취소하고 사용자를 삭제하시겠습니까?')) {
+                                      return;
+                                    }
+                                    try {
+                                      const { error } = await supabase
+                                        .from('users')
+                                        .delete()
+                                        .eq('user_id', selectedUser.user_id);
+                                      
+                                      if (error) throw error;
+                                      
+                                      toast.success('사용자 승인이 취소되었습니다');
+                                      setSelectedUser(null);
+                                      await fetchData();
+                                    } catch (error) {
+                                      toast.error('승인 취소 실패');
+                                    }
+                                  }}
+                                  className="px-3 py-1 bg-red-500/20 text-red-400 rounded text-sm hover:bg-red-500/30 transition-all border border-red-500/50"
+                                >
+                                  승인취소
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
                         <div>
                           <p className="text-slate-400 text-sm mb-1">가입일</p>
@@ -1107,6 +1340,29 @@ export function UserWalletManagement() {
                             {selectedUser.last_login ? new Date(selectedUser.last_login).toLocaleDateString() : '-'}
                           </p>
                         </div>
+                        <div>
+                          <p className="text-slate-400 text-sm mb-1">계정 유형</p>
+                          <span className={`inline-block px-3 py-1 rounded text-sm ${
+                            selectedUser.role === 'user' ? 'bg-blue-500/20 text-blue-400' :
+                            selectedUser.role === 'store' ? 'bg-purple-500/20 text-purple-400' :
+                            selectedUser.role === 'center' ? 'bg-orange-500/20 text-orange-400' :
+                            selectedUser.role === 'admin' ? 'bg-red-500/20 text-red-400' :
+                            selectedUser.role === 'master' ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-slate-500/20 text-slate-400'
+                          }`}>
+                            {selectedUser.role === 'user' ? '회원' :
+                             selectedUser.role === 'store' ? '가맹점' :
+                             selectedUser.role === 'center' ? '센터' :
+                             selectedUser.role === 'admin' ? '관리자' :
+                             selectedUser.role === 'master' ? '마스터' : selectedUser.role}
+                          </span>
+                        </div>
+                        {selectedUser.role === 'user' && selectedUser.parent?.username && (
+                          <div>
+                            <p className="text-slate-400 text-sm mb-1">소속 가맹점</p>
+                            <p className="text-slate-300">🏪 {selectedUser.parent.username}</p>
+                          </div>
+                        )}
                         <div>
                           <p className="text-slate-400 text-sm mb-1">
                             회원 등급

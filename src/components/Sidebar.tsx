@@ -1,15 +1,13 @@
 import { LayoutDashboard, Users, Receipt, TrendingUp, DollarSign, Coins, Zap, Shield, MessageCircle, Settings, Home, Repeat, Store, User, Activity } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
-export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: (tab: string) => void }) {
-  const { user } = useAuth();
+interface SidebarProps {
+  activeTab: string;
+  setActiveTab: (tab: string) => void;
+}
 
-  // 🔍 디버깅: 현재 사용자 정보 출력
-  console.log('🔍 Sidebar - Current User:', {
-    role: user?.role,
-    email: user?.email,
-    username: user?.username
-  });
+export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
+  const { user } = useAuth();
 
   // Center Admin 메뉴 (센터 관리자)
   const centerMenuItems = [
@@ -41,7 +39,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
   const storeMenuItems = [
     { id: "dashboard", label: "대시보드", icon: LayoutDashboard },
     { id: "users-wallets", label: "소속 회원", icon: Users },
-    { id: "swaps", label: "거래 내역", icon: TrendingUp },
+    { id: "deposit-withdrawal", label: "거래 내역", icon: TrendingUp },
   ];
 
   // Agency Admin 메뉴 (에이전시 관리자)
@@ -65,20 +63,19 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     menuItems = masterMenuItems;
   }
 
-  // 🔍 디버깅: 할당된 메뉴 출력
-  console.log('🔍 Sidebar - Selected Menu:', {
-    role: user?.role,
-    menuCount: menuItems.length,
-    menuIds: menuItems.map(m => m.id)
-  });
-
   return (
     <aside className="w-64 bg-slate-900/50 backdrop-blur-xl border-r border-cyan-500/20">
       <div className="p-6">
         <button 
           onClick={() => {
-            window.location.hash = '#';
-            window.location.reload();
+            if (user?.role === 'master') {
+              // 마스터: 사용자 로그인 페이지로
+              window.location.hash = '#';
+              window.location.reload();
+            } else {
+              // 에이전시/센터/가맹점: 대시보드로
+              setActiveTab('dashboard');
+            }
           }}
           className="flex items-center gap-3 mb-8 group w-full hover:scale-105 transition-transform"
         >

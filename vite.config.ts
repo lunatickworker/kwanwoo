@@ -9,6 +9,7 @@
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {
         'vaul@1.1.2': 'vaul',
+        'tronweb@6.0.0': 'tronweb',
         'sonner@2.0.3': 'sonner',
         'recharts@2.15.2': 'recharts',
         'react-resizable-panels@2.1.7': 'react-resizable-panels',
@@ -17,9 +18,11 @@
         'next-themes@0.4.6': 'next-themes',
         'lucide-react@0.487.0': 'lucide-react',
         'input-otp@1.4.2': 'input-otp',
+        'ethers@6.13.0': 'ethers',
         'embla-carousel-react@8.6.0': 'embla-carousel-react',
         'cmdk@1.1.1': 'cmdk',
         'class-variance-authority@0.7.1': 'class-variance-authority',
+        'bs58@5.0.0': 'bs58',
         '@radix-ui/react-tooltip@1.1.8': '@radix-ui/react-tooltip',
         '@radix-ui/react-toggle@1.1.2': '@radix-ui/react-toggle',
         '@radix-ui/react-toggle-group@1.1.2': '@radix-ui/react-toggle-group',
@@ -46,56 +49,60 @@
         '@radix-ui/react-aspect-ratio@1.1.2': '@radix-ui/react-aspect-ratio',
         '@radix-ui/react-alert-dialog@1.1.6': '@radix-ui/react-alert-dialog',
         '@radix-ui/react-accordion@1.2.3': '@radix-ui/react-accordion',
+        '@noble/hashes@1.3.3': '@noble/hashes',
+        '@noble/curves@1.3.0': '@noble/curves',
         '@jsr/supabase__supabase-js@2.49.8': '@jsr/supabase__supabase-js',
         '@jsr/supabase__supabase-js@2': '@jsr/supabase__supabase-js',
         '@': path.resolve(__dirname, './src'),
-      },
+        "@figma": path.resolve(__dirname, "./src/app/components/figma"), // ✅ 추가
     },
-    build: {
+  },
+  build: {
     target: "esnext",
     outDir: "dist",
+    minify: "terser",
+    terserOptions: {
+      compress: {
+        drop_console: true, // console.log 제거
+        drop_debugger: true,
+        passes: 3, // 여러 번 통과
+      },
+      format: {
+        comments: false, // 모든 주석 제거
+      },
+      mangle: true, // 변수명 축약
+    },
     rollupOptions: {
       output: {
         manualChunks: (id) => {
-          // React 관련 핵심 라이브러리
-          if (id.includes('node_modules/react/') || 
-              id.includes('node_modules/react-dom/') || 
-              id.includes('node_modules/scheduler/')) {
-            return 'react-core';
+          // Avoid circular dependencies
+          if (id.includes("node_modules/@radix-ui/")) {
+            return "radix-ui";
           }
-          
-          // Radix UI - 전체 통합 (분할하지 않음)
-          if (id.includes('node_modules/@radix-ui/')) {
-            return 'radix-ui';
+          if (id.includes("node_modules/react/") ||
+              id.includes("node_modules/react-dom/") ||
+              id.includes("node_modules/scheduler/")) {
+            return "react-core";
           }
-          
-          // Recharts
-          if (id.includes('node_modules/recharts/') || 
-              id.includes('node_modules/recharts-scale/') || 
-              id.includes('node_modules/victory-')) {
-            return 'recharts';
+          if (id.includes("node_modules/recharts/") ||
+              id.includes("node_modules/recharts-scale/") ||
+              id.includes("node_modules/victory-")) {
+            return "recharts";
           }
-          
-          // Supabase
-          if (id.includes('node_modules/@supabase/') || 
-              id.includes('node_modules/@jsr/supabase') || 
-              id.includes('supabase-js')) {
-            return 'supabase';
+          if (id.includes("node_modules/@supabase/") ||
+              id.includes("node_modules/@jsr/supabase") ||
+              id.includes("supabase-js")) {
+            return "supabase";
           }
-          
-          // Lucide 아이콘
-          if (id.includes('node_modules/lucide-react/')) {
-            return 'lucide-icons';
+          if (id.includes("node_modules/lucide-react/")) {
+            return "lucide-icons";
           }
-          
-          // 기타 vendor 라이브러리들
-          if (id.includes('node_modules/')) {
-            return 'vendor';
+          if (id.includes("node_modules/")) {
+            return "vendor";
           }
         },
       },
     },
-    // 청크 크기 경고 한도를 1000kB로 상향 (500kB -> 1000kB)
     chunkSizeWarningLimit: 1000,
     sourcemap: false,
   },

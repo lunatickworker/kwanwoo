@@ -3,8 +3,8 @@ import { CheckCircle, XCircle, Clock, Wallet, AlertTriangle, Zap, ChevronLeft, C
 import { supabase } from '../utils/supabase/client';
 import { toast } from 'sonner@2.0.3';
 import { createSmartAccount } from '../utils/biconomy/smartAccount';
+import { getBiconomySettings } from '../utils/systemSettings';
 import { getHierarchyUserIds } from '../utils/api/query-helpers';
-import { isBiconomyEnabled } from '../utils/biconomySettings';
 import { useAuth } from '../contexts/AuthContext';
 
 interface Verification {
@@ -89,41 +89,25 @@ export function AccountVerificationManagement() {
   };
 
   const handleApprove = async (verification: Verification) => {
-    if (!confirm(`${verification.users?.username}의 계좌인증을 승인하시겠습니까?\nSmart Account가 자동으로 생성됩니다.`)) {
+    // Biconomy 설정 확인
+    const biconomySettings = await getBiconomySettings();
+    const isBiconomyEnabled = biconomySettings?.enabled ?? false;
+
+    const confirmMessage = isBiconomyEnabled 
+      ? `${verification.users?.username}의 계좌인증을 승인하시겠습니까?\nSmart Account가 자동으로 생성됩니다.`
+      : `${verification.users?.username}의 계좌인증을 승인하시겠습니까?`;
+
+    if (!confirm(confirmMessage)) {
       return;
     }
 
     setProcessingId(verification.verification_id);
 
     try {
-      // Biconomy 활성화 여부 확인
-      const biconomyEnabled = await isBiconomyEnabled();
-      if (!biconomyEnabled) {
-        // Step 1: 기존 지갑이 있는지 확인
-        const { data: existingWallets, error: walletCheckError } = await supabase
-          .from('wallets')
-          .select('*')
-          .eq('user_id', verification.user_id);
+      // Biconomy 설정 확인
+      const biconomySettings = await getBiconomySettings();
+      const isBiconomyEnabled = biconomySettings?.enabled ?? false;
 
-        if (walletCheckError) throw walletCheckError;
-
-        // Step 2: Smart Account 없이 바로 인증 상태만 업데이트
-        const { error: updateError } = await supabase
-          .from('account_verifications')
-          .update({
-            status: 'verified',
-            verified_at: new Date().toISOString(),
-          })
-          .eq('verification_id', verification.verification_id);
-
-        if (updateError) throw updateError;
-
-        toast.success('계좌인증 승인 완료!');
-        await fetchVerifications();
-        return;
-      }
-
-      // Biconomy 활성화된 경우 - Smart Account 생성
       // Step 1: 먼저 기존 지갑이 있는지 확인
       const { data: existingWallets, error: walletCheckError } = await supabase
         .from('wallets')
@@ -132,79 +116,97 @@ export function AccountVerificationManagement() {
 
       if (walletCheckError) throw walletCheckError;
 
-      // Step 2: Smart Account 생성 (항상 새로 생성)
-      toast.info('⚡ Smart Account 생성 중...');
-      
-      const smartAccount = await createSmartAccount({
-        userId: verification.user_id,
-        username: verification.users?.username || 'Unknown',
-        chainId: 8453, // Base Mainnet
-      });
+      // Step 2: Smart Account 생성 (Biconomy 활성화 시에만)
+      let smartAccountAddress: string | null = null;
+      let chainId: number | null = null;
 
-      const smartAccountAddress = smartAccount.address;
-      const chainId = smartAccount.chainId;
-      
-      toast.success(`✅ Smart Account 생성 완료: ${smartAccountAddress.slice(0, 10)}...`);
+      if (isBiconomyEnabled) {
+        toast.info('⚡ Smart Account 생성 중...');
+        
+        const smartAccount = await createSmartAccount({
+          userId: verification.user_id,
+          username: verification.users?.username || 'Unknown',
+          chainId: 8453, // Base Mainnet
+        });
+
+        smartAccountAddress = smartAccount.address;
+        chainId = smartAccount.chainId;
+        
+        toast.success(`✅ Smart Account 생성 완료: ${smartAccountAddress.slice(0, 10)}...`);
+      } else {
+        toast.info('인증 처리 중...');
+      }
 
       // Step 3: 인증 상태 업데이트
+      const updateData: any = {
+        status: 'verified',
+        verified_at: new Date().toISOString(),
+      };
+
+      // Biconomy 활성화 시에만 Smart Account 정보 저장
+      if (isBiconomyEnabled && smartAccountAddress && chainId) {
+        updateData.smart_account_address = smartAccountAddress;
+        updateData.smart_account_chain_id = chainId;
+      }
+
       const { error: updateError } = await supabase
         .from('account_verifications')
-        .update({
-          status: 'verified',
-          verified_at: new Date().toISOString(),
-          smart_account_address: smartAccountAddress,
-          smart_account_chain_id: chainId,
-        })
+        .update(updateData)
         .eq('verification_id', verification.verification_id);
 
       if (updateError) throw updateError;
 
-      // Step 4: 기존 지갑이 있으면 UPDATE, 없으면 INSERT
-      if (existingWallets && existingWallets.length > 0) {
-        // 기존 지갑들을 새 주소로 업데이트
-        const { error: walletUpdateError } = await supabase
-          .from('wallets')
-          .update({
-            address: smartAccountAddress,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('user_id', verification.user_id);
+      // Step 4: 지갑 생성 또는 업데이트 (Biconomy 활성화 시에만)
+      if (isBiconomyEnabled && smartAccountAddress) {
+        if (existingWallets && existingWallets.length > 0) {
+          // 기존 지갑들을 새 주소로 업데이트
+          const { error: walletUpdateError } = await supabase
+            .from('wallets')
+            .update({
+              address: smartAccountAddress,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('user_id', verification.user_id);
 
-        if (walletUpdateError) {
-          console.error('Wallet update error:', walletUpdateError);
-          toast.warning('지갑 주소 업데이트 중 일부 오류 발생');
+          if (walletUpdateError) {
+            console.error('Wallet update error:', walletUpdateError);
+            toast.warning('지갑 주소 업데이트 중 일부 오류 발생');
+          } else {
+            toast.success(`${existingWallets.length}개 지갑 주소 업데이트 완료`);
+          }
         } else {
-          toast.success(`${existingWallets.length}개 지갑 주소 업데이트 완료`);
+          // 기존 지갑이 없으면 새로 생성
+          const walletsToCreate = [
+            {
+              user_id: verification.user_id,
+              coin_type: 'KRWQ',
+              address: smartAccountAddress,
+              balance: 0,
+              status: 'active',
+            },
+            {
+              user_id: verification.user_id,
+              coin_type: 'USDT',
+              address: smartAccountAddress,
+              balance: 0,
+              status: 'active',
+            },
+          ];
+
+          const { error: walletError } = await supabase
+            .from('wallets')
+            .insert(walletsToCreate);
+
+          if (walletError) {
+            console.error('Wallet creation error:', walletError);
+            // 지갑 생성 실패해도 인증은 완료된 상태로 유지
+          } else {
+            toast.success('지갑 생성 완료');
+          }
         }
       } else {
-        // 기존 지갑이 없으면 새로 생성
-        const walletsToCreate = [
-          {
-            user_id: verification.user_id,
-            coin_type: 'KRWQ',
-            address: smartAccountAddress,
-            balance: 0,
-            status: 'active',
-          },
-          {
-            user_id: verification.user_id,
-            coin_type: 'USDT',
-            address: smartAccountAddress,
-            balance: 0,
-            status: 'active',
-          },
-        ];
-
-        const { error: walletError } = await supabase
-          .from('wallets')
-          .insert(walletsToCreate);
-
-        if (walletError) {
-          console.error('Wallet creation error:', walletError);
-          // 지갑 생성 실패해도 인증은 완료된 상태로 유지
-        } else {
-          toast.success('지갑 생성 완료');
-        }
+        // Biconomy 비활성화 시 지갑 생성 건너뛰기
+        console.log('Biconomy disabled, skipping wallet creation');
       }
 
       toast.success('계좌인증 승인 완료!');
@@ -319,37 +321,37 @@ export function AccountVerificationManagement() {
       </div>
 
       {/* 통계 카드 */}
-      <div className="grid grid-cols-4 gap-3">
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-slate-400 text-xs">전체</span>
-            <Wallet className="w-4 h-4 text-slate-400" />
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="relative group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-slate-500 to-slate-400 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
+          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
+            <p className="text-slate-400 text-sm mb-1">전체</p>
+            <p className="text-white text-2xl">{stats.total.toLocaleString()}</p>
           </div>
-          <p className="text-white text-xl">{stats.total}</p>
         </div>
 
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-amber-400 text-xs">대기중</span>
-            <Clock className="w-4 h-4 text-amber-400" />
+        <div className="relative group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
+          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
+            <p className="text-slate-400 text-sm mb-1">대기중</p>
+            <p className="text-amber-400 text-2xl">{stats.pending.toLocaleString()}</p>
           </div>
-          <p className="text-amber-400 text-xl">{stats.pending}</p>
         </div>
 
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-green-400 text-xs">승인됨</span>
-            <CheckCircle className="w-4 h-4 text-green-400" />
+        <div className="relative group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
+          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
+            <p className="text-slate-400 text-sm mb-1">승인됨</p>
+            <p className="text-green-400 text-2xl">{stats.verified.toLocaleString()}</p>
           </div>
-          <p className="text-green-400 text-xl">{stats.verified}</p>
         </div>
 
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-red-400 text-xs">거부됨</span>
-            <XCircle className="w-4 h-4 text-red-400" />
+        <div className="relative group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-red-500 to-rose-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
+          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
+            <p className="text-slate-400 text-sm mb-1">거부됨</p>
+            <p className="text-red-400 text-2xl">{stats.rejected.toLocaleString()}</p>
           </div>
-          <p className="text-red-400 text-xl">{stats.rejected}</p>
         </div>
       </div>
 

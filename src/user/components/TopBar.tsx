@@ -24,7 +24,7 @@ export function TopBar({ currentScreen }: TopBarProps) {
       case 'settings': return '설정';
       case 'transfer-request': return '전송 요청';
       case 'coin-purchase': return '코인 구매';
-      case 'account-verification': return '계좌 인증';
+      case 'account-verification': return '1원 계좌인증';
       default: return '';
     }
   };

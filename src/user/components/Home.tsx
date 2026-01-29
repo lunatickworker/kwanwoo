@@ -69,13 +69,13 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     const fetchPrices = async () => {
       const { data } = await supabase
         .from('supported_tokens')
-        .select('symbol, price_usd');
+        .select('symbol, price_krw');
 
       if (data) {
         const priceMap: { [key: string]: number } = {};
         data.forEach((token: any) => {
-          // USD 가격을 원화로 변환 (1 USD = 1350 KRW 가정)
-          priceMap[token.symbol] = (token.price_usd || 0) * 1350;
+          // price_krw 직접 사용 (실시간 환율 반영)
+          priceMap[token.symbol] = token.price_krw || 0;
         });
         setPrices(priceMap);
       }
@@ -112,7 +112,7 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     };
   }, [user]);
 
-  // 총 잔액 계산
+  // 총 잔액 계산 및 변동률 계산
   useEffect(() => {
     const total = wallets.reduce((sum, wallet) => {
       const price = prices[wallet.coin_type] || 0;
@@ -120,7 +120,24 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     }, 0);
 
     setTotalBalance(total);
-    setTodayChange(Math.random() * 10 - 5); // 임시 - 실제로는 계산 필요
+
+    // 페이지 첫 로드 시 잔액 저장 (이후 계속 이 값 대비 변동률 계산)
+    const savedBalance = localStorage.getItem('balance_snapshot_value');
+
+    if (!savedBalance) {
+      // 저장된 값이 없으면 현재 잔액을 기준으로 저장
+      localStorage.setItem('balance_snapshot_value', total.toString());
+      setTodayChange(0); // 첫 로드 시에는 0%
+    } else {
+      // 저장된 기준 잔액과 현재 잔액 비교
+      const startBalance = parseFloat(savedBalance);
+      if (startBalance > 0) {
+        const changePercent = ((total - startBalance) / startBalance) * 100;
+        setTodayChange(changePercent);
+      } else {
+        setTodayChange(0);
+      }
+    }
   }, [wallets, prices]);
 
   const recentTransactions = transactions.slice(0, 3);

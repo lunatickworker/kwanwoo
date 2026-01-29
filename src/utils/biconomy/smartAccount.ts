@@ -1,5 +1,5 @@
 import { SUPERTRANSACTION_CONFIG, BICONOMY_CONFIG, debugLog, errorLog, SUPABASE_CONFIG } from '../config';
-import { isBiconomyEnabled } from '../biconomySettings';
+import { getBiconomySettings } from '../systemSettings';
 
 const API_URL = SUPERTRANSACTION_CONFIG.apiUrl;
 const API_KEY = SUPERTRANSACTION_CONFIG.apiKey;
@@ -32,9 +32,16 @@ export async function createSmartAccount(
     debugLog('Creating Smart Account for user:', request.userId);
 
     // Biconomy 활성화 여부 확인
-    const enabled = await isBiconomyEnabled();
-    if (!enabled) {
-      throw new Error('Biconomy가 비활성화되어 있습니다. 관리자 설정을 확인해주세요.');
+    const settings = await getBiconomySettings();
+    if (!settings?.enabled) {
+      debugLog('Biconomy is disabled, bypassing Smart Account creation');
+      return {
+        address: '0x0000000000000000000000000000000000000000',
+        chainId: request.chainId || SUPERTRANSACTION_CONFIG.defaultChainId,
+        owner: request.userId,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      };
     }
 
     const chainId = request.chainId || SUPERTRANSACTION_CONFIG.defaultChainId;
@@ -132,12 +139,6 @@ export async function composeTransaction(payload: {
   gasPayment?: any;
 }) {
   try {
-    // Biconomy 활성화 여부 확인
-    const enabled = await isBiconomyEnabled();
-    if (!enabled) {
-      throw new Error('Biconomy가 비활성화되어 있습니다. 관리자 설정을 확인해주세요.');
-    }
-
     // Backend API 호출 (CORS 회피)
     const response = await fetch(`${BACKEND_URL}/api/biconomy/compose`, {
       method: 'POST',

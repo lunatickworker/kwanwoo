@@ -3,6 +3,7 @@ import { ArrowLeft, Send, CheckCircle, Clock, XCircle, Info, Wallet, AlertCircle
 import { Screen } from '../App';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { getBiconomySettings } from '../../utils/systemSettings';
 import { toast } from 'sonner';
 
 // Supabase URL and Anon Key (hardcoded as per client.ts)
@@ -38,9 +39,16 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [codeVerified, setCodeVerified] = useState(false);
   const [codeError, setCodeError] = useState('');
+  const [isBiconomyEnabled, setIsBiconomyEnabled] = useState(false);
 
   // 기존 인증 상태 확인
   useEffect(() => {
+    const loadSettings = async () => {
+      const settings = await getBiconomySettings();
+      setIsBiconomyEnabled(settings?.enabled ?? false);
+    };
+    
+    loadSettings();
     fetchVerificationStatus();
 
     // 실시간 업데이트 구독
@@ -60,9 +68,9 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
           
           // 관리자가 승인/거부했을 때 알림
           if ((payload.new as any)?.status === 'verified') {
-            toast.success('계좌 인증이 승인되었습니다! 지갑이 활성화되었습니다.');
+            toast.success('1원 계좌인증이 승인되었습니다! 지갑이 활성화되었습니다.');
           } else if ((payload.new as any)?.status === 'rejected') {
-            toast.error('계좌 인증이 거부되었습니다.');
+            toast.error('1원 계좌인증이 거부되었습니다.');
           }
         }
       )
@@ -149,10 +157,22 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
       console.log('🔍 Response Body:', result);
 
       if (!response.ok) {
-        console.error('❌ Error Code:', result.code || 'UNKNOWN');
-        console.error('❌ Error Message:', result.error || 'Unknown error');
-        console.error('❌ Full Error Object:', result);
-        throw new Error(result.error || '계좌 인증 요청 실패');
+        console.error('❌ ❌ Error Code:', result.code || 'UNKNOWN');
+        console.error('❌ ❌ Error Message:', result.error || 'Unknown error');
+        console.error('❌ ❌ Full Error Object:', result);
+        
+        // OAuth 토큰 오류는 무시하고 성공 처리 (백엔드에서 이미 DB에 저장됨)
+        if (result.code === 'OAUTH_TOKEN_ERROR') {
+          console.log('⚠️ OAuth 오류 무시, 관리자 수동 승인 모드로 진행');
+          toast.success('승인 요청이 완료되었습니다');
+          toast.info('관리자 검토를 기다려주세요', { duration: 5000 });
+          
+          // 상태 새로고침
+          await fetchVerificationStatus();
+          return;
+        }
+        
+        throw new Error(result.error || '1원 계좌인증 요청 실패');
       }
 
       // 임시 시나리오: API에서 받은 authCode를 표시 (디버깅용)
@@ -168,10 +188,10 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
       await fetchVerificationStatus();
       
     } catch (error: any) {
-      console.error('❌ Verification submit error:', error);
-      console.error('❌ Error name:', error.name);
-      console.error('❌ Error message:', error.message);
-      console.error('❌ Error stack:', error.stack);
+      console.error('❌ ❌ Verification submit error:', error);
+      console.error('❌ ❌ Error name:', error.name);
+      console.error('❌ ❌ Error message:', error.message);
+      console.error('❌ ❌ Error stack:', error.stack);
       toast.error(error.message || '신청 중 오류가 발생했습니다');
     } finally {
       setIsSubmitting(false);
@@ -290,7 +310,7 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
         </button>
         <div>
           <h1 className="text-white text-xl lg:text-2xl">1원 계좌인증</h1>
-          <p className="text-slate-400 text-sm">KYC 대신 계좌인증으로 간편하게</p>
+          <p className="text-slate-400 text-sm">KYC 대신 1원 계좌인증으로 간편하게</p>
         </div>
       </div>
 
@@ -329,7 +349,7 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
                   <div className="pt-3 border-t border-slate-700/50">
                     <div className="flex items-center gap-2 mb-2">
                       <Wallet className="w-4 h-4 text-cyan-400" />
-                      <span className="text-cyan-400 text-sm">Smart Account</span>
+                      <span className="text-cyan-400 text-sm">{isBiconomyEnabled ? 'Smart Account' : '지갑 주소'}</span>
                     </div>
                     <div className="bg-slate-900/50 rounded-lg p-3">
                       <p className="text-slate-300 text-xs break-all font-mono">
@@ -339,7 +359,7 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
                   </div>
                   <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3">
                     <p className="text-green-400 text-sm">
-                      ✅ 코인 지갑이 자동으로 생성되었습니다!
+                      ✅ {isBiconomyEnabled ? '코인 지갑이 자동으로 생성되었습니다!' : '계좌 인증이 완료되었습니다!'}
                     </p>
                   </div>
                 </>
@@ -381,50 +401,53 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
                 value={bankName}
                 onChange={(e) => setBankName(e.target.value)}
                 className="w-full bg-slate-800/50 border border-cyan-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500 transition-colors"
+                style={{
+                  colorScheme: 'dark'
+                }}
               >
-                <option value="">은행을 선택하세요</option>
-                <option value="한국은행">한국은행</option>
-                <option value="산업은행">산업은행</option>
-                <option value="IBK기업은행">IBK기업은행</option>
-                <option value="KB국민은행">KB국민은행</option>
-                <option value="수협은행">수협은행</option>
-                <option value="수출입은행">수출입은행</option>
-                <option value="NH농협은행">NH농협은행</option>
-                <option value="지역농축협">지역농축협</option>
-                <option value="우리은행">우리은행</option>
-                <option value="한국씨티은행">한국씨티은행</option>
-                <option value="대구은행">대구은행</option>
-                <option value="부산은행">부산은행</option>
-                <option value="광주은행">광주은행</option>
-                <option value="제주은행">제주은행</option>
-                <option value="전북은행">전북은행</option>
-                <option value="경남은행">경남은행</option>
-                <option value="우리카드">우리카드</option>
-                <option value="하나카드">하나카드</option>
-                <option value="새마을금고">새마을금고</option>
-                <option value="신협">신협</option>
-                <option value="저축은행">저축은행</option>
-                <option value="모건스탠리은행">모건스탠리은행</option>
-                <option value="HSBC은행">HSBC은행</option>
-                <option value="도이치은행">도이치은행</option>
-                <option value="제이피모간체이스은행">제이피모간체이스은행</option>
-                <option value="미즈호은행">미즈호은행</option>
-                <option value="엠유에프지은행">엠유에프지은행</option>
-                <option value="BOA은행">BOA은행</option>
-                <option value="비엔피파리바은행">비엔피파리바은행</option>
-                <option value="중국공상은행">중국공상은행</option>
-                <option value="산림조합">산림조합</option>
-                <option value="대화은행">대화은행</option>
-                <option value="교보증권">교보증권</option>
-                <option value="중국건설은행">중국건설은행</option>
-                <option value="우체국">우체국</option>
-                <option value="신한금융투자">신한금융투자</option>
-                <option value="KB증권">KB증권</option>
-                <option value="하나은행">하나은행</option>
-                <option value="신한은행">신한은행</option>
-                <option value="K뱅크">K뱅크</option>
-                <option value="카카오뱅크">카카오뱅크</option>
-                <option value="유안타증권">유안타증권</option>
+                <option value="" className="bg-slate-800 text-slate-400">은행을 선택하세요</option>
+                <option value="한국은행" className="bg-slate-800 text-white">한국은행</option>
+                <option value="산업은행" className="bg-slate-800 text-white">산업은행</option>
+                <option value="IBK기업은행" className="bg-slate-800 text-white">IBK기업은행</option>
+                <option value="KB국민은행" className="bg-slate-800 text-white">KB국민은행</option>
+                <option value="수협은행" className="bg-slate-800 text-white">수협은행</option>
+                <option value="수출입은행" className="bg-slate-800 text-white">수출입은행</option>
+                <option value="NH농협은행" className="bg-slate-800 text-white">NH농협은행</option>
+                <option value="지역농축협" className="bg-slate-800 text-white">지역농축협</option>
+                <option value="우리은행" className="bg-slate-800 text-white">우리은행</option>
+                <option value="한국씨티은행" className="bg-slate-800 text-white">한국씨티은행</option>
+                <option value="대구은행" className="bg-slate-800 text-white">대구은행</option>
+                <option value="부산은행" className="bg-slate-800 text-white">부산은행</option>
+                <option value="광주은행" className="bg-slate-800 text-white">광주은행</option>
+                <option value="제주은행" className="bg-slate-800 text-white">제주은행</option>
+                <option value="전북은행" className="bg-slate-800 text-white">전북은행</option>
+                <option value="경남은행" className="bg-slate-800 text-white">경남은행</option>
+                <option value="우리카드" className="bg-slate-800 text-white">우리카드</option>
+                <option value="하나카드" className="bg-slate-800 text-white">하나카드</option>
+                <option value="새마을금고" className="bg-slate-800 text-white">새마을금고</option>
+                <option value="신협" className="bg-slate-800 text-white">신협</option>
+                <option value="저축은행" className="bg-slate-800 text-white">저축은행</option>
+                <option value="모건스탠리은행" className="bg-slate-800 text-white">모건스탠리은행</option>
+                <option value="HSBC은행" className="bg-slate-800 text-white">HSBC은행</option>
+                <option value="도이치은행" className="bg-slate-800 text-white">도이치은행</option>
+                <option value="제이피모간체이스은행" className="bg-slate-800 text-white">제이피모간체이스은행</option>
+                <option value="미즈호은행" className="bg-slate-800 text-white">미즈호은행</option>
+                <option value="엠유에프지은행" className="bg-slate-800 text-white">엠유에프지은행</option>
+                <option value="BOA은행" className="bg-slate-800 text-white">BOA은행</option>
+                <option value="비엔피파리바은행" className="bg-slate-800 text-white">비엔피파리바은행</option>
+                <option value="중국공상은행" className="bg-slate-800 text-white">중국공상은행</option>
+                <option value="산림조합" className="bg-slate-800 text-white">산림조합</option>
+                <option value="대화은행" className="bg-slate-800 text-white">대화은행</option>
+                <option value="교보증권" className="bg-slate-800 text-white">교보증권</option>
+                <option value="중국건설은행" className="bg-slate-800 text-white">중국건설은행</option>
+                <option value="우체국" className="bg-slate-800 text-white">우체국</option>
+                <option value="신한금융투자" className="bg-slate-800 text-white">신한금융투자</option>
+                <option value="KB증권" className="bg-slate-800 text-white">KB증권</option>
+                <option value="하나은행" className="bg-slate-800 text-white">하나은행</option>
+                <option value="신한은행" className="bg-slate-800 text-white">신한은행</option>
+                <option value="K뱅크" className="bg-slate-800 text-white">K뱅크</option>
+                <option value="카카오뱅크" className="bg-slate-800 text-white">카카오뱅크</option>
+                <option value="유안타증권" className="bg-slate-800 text-white">유안타증권</option>
               </select>
             </div>
 
@@ -487,7 +510,7 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="text-purple-400 shrink-0">5.</span>
-                  <span className="text-cyan-400">Smart Account 자동 생성 및 지갑 활성화 ✨</span>
+                  <span className="text-cyan-400">{isBiconomyEnabled ? 'Smart Account 자동 생성 및 지갑 활성화 ✨' : '계좌 인증 완료 및 서비스 활성화 ✨'}</span>
                 </li>
               </ol>
               <div className="mt-3 pt-3 border-t border-purple-500/30">

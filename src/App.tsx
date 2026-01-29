@@ -6,6 +6,7 @@ import { AdminApp } from './components/AdminApp';
 import { MasterApp } from './components/MasterApp';
 import { Login } from './components/Login';
 import { getTenantInfo, getDomainType, isRoleAllowedForDomain, redirectToCorrectDomain } from './utils/domain';
+import { startPriceUpdateService } from './utils/priceUpdater';
 import './utils/debug-users';
 import './utils/fix-template-id'; // ✅ 템플릿 ID 수동 수정 유틸리티 로드
 
@@ -47,24 +48,29 @@ function AppContent() {
   useEffect(() => {
     async function loadTenantInfo() {
       try {
-        setDomainLoading(true);
-        
-        // 현재 도메인의 Tenant 정보 조회
+        // 현재 도메인의 Tenant 정보 조회 (백그라운드)
         const tenant = await getTenantInfo();
         const type = await getDomainType();
         
         setTenantInfo(tenant);
         setDomainType(type);
-
-        console.log('[App] Tenant 정보:', tenant);
-        console.log('[App] Domain Type:', type);
+        setDomainLoading(false); // 로딩 완료
+        
+        // 🔥 admin 서브도메인이면 자동으로 /#admin으로 리디렉션
+        // 단, 이미 hash가 있는 경우는 건드리지 않음
+        if (type === 'admin' && !window.location.hash) {
+          window.location.hash = '#admin/login';
+        }
       } catch (error) {
         console.error('[App] Tenant 정보 로드 실패:', error);
-      } finally {
-        setDomainLoading(false);
+        setDomainLoading(false); // 에러 발생해도 로딩 해제
       }
     }
 
+    // 도메인 로딩은 즉시 완료로 설정 (블로킹 방지)
+    setDomainLoading(false);
+    
+    // 백그라운드에서 Tenant 정보 로드
     loadTenantInfo();
   }, []);
 
@@ -72,14 +78,9 @@ function AppContent() {
   // 라우팅 로직 (간단 버전)
   // ============================================
   useEffect(() => {
-    // 로딩 중이면 대기
     if (isLoading) return;
-    
-    console.log('[App] 라우팅 로직 실행 - user:', user, 'currentRoute:', currentRoute);
 
-    const hash = window.location.hash.slice(1); // # 제거
-    const hostname = window.hostname;
-    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const hash = window.location.hash.slice(1);
 
     // ==========================================
     // 1. Hash 라우팅 (우선순위 1)
@@ -103,12 +104,9 @@ function AppContent() {
 
     // #admin 경로 (센터/에이전시/가맹점 관리)
     if (hash.startsWith('admin')) {
-      console.log('[App] #admin 경로 감지 - user:', user?.email, 'role:', user?.role);
       if (user && ['center', 'agency', 'store', 'admin'].includes(user.role)) {
-        console.log('[App] admin 페이지로 라우팅');
         setCurrentRoute('admin');
       } else {
-        console.log('[App] 권한 없음 - 로그인 페이지로');
         setCurrentRoute('admin-login');
       }
       return;
@@ -119,7 +117,6 @@ function AppContent() {
     // ==========================================
     
     if (!user) {
-      // 로그인 안됨 → 회원 앱 (공개)
       setCurrentRoute('user');
       return;
     }
@@ -152,7 +149,6 @@ function AppContent() {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.slice(1);
-      console.log('[App] Hash changed to:', hash, 'user:', user?.email);
       
       // #master
       if (hash.startsWith('master')) {
@@ -168,12 +164,9 @@ function AppContent() {
       }
       // #admin
       else if (hash.startsWith('admin')) {
-        console.log('[App] Hash changed - #admin detected, user role:', user?.role);
         if (user && ['center', 'agency', 'store', 'admin'].includes(user.role)) {
-          console.log('[App] Hash changed - routing to admin page');
           setCurrentRoute('admin');
         } else {
-          console.log('[App] Hash changed - no permission, routing to login');
           setCurrentRoute('admin-login');
         }
       }
@@ -204,23 +197,16 @@ function AppContent() {
   }
 
   if (currentRoute === 'admin-login') {
-    return <Login onLoginSuccess={() => {
-      // 로그인 성공 시 아무것도 하지 않음
-      // Login 컴포넌트에서 hash 변경을 처리하고
-      // useEffect에서 user와 hash를 감지하여 자동으로 라우팅됨
-      console.log('[App] Login success callback called');
-    }} />;
+    return <Login onLoginSuccess={() => {}} />;
   }
 
   // Admin 페이지 (center, agency, store, admin 역할)
   if (currentRoute === 'admin') {
     if (!user || !['admin', 'agency', 'center', 'store'].includes(user.role)) {
-      console.log('[App] Admin 페이지 접근 거부 - user:', user?.email, 'role:', user?.role);
       setCurrentRoute('admin-login');
       window.location.hash = '#admin/login';
       return null;
     }
-    console.log('[App] Admin 페이지 렌더링 - user:', user.email, 'role:', user.role);
     return <AdminApp />;
   }
 
@@ -260,6 +246,16 @@ function AppContent() {
 }
 
 function App() {
+  // 🚀 가격 업데이트 서비스 시작 (10분마다)
+  useEffect(() => {
+    console.log('🚀 Initializing price update service...');
+    const stopService = startPriceUpdateService(10); // 10분마다 업데이트
+
+    return () => {
+      stopService(); // 컴포넌트 언마운트 시 정지
+    };
+  }, []);
+
   return (
     <AuthProvider>
       <AppContent />

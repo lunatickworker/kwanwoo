@@ -3,7 +3,7 @@ import { Activity, Mail, Lock, LogIn, Eye, EyeOff, Sparkles, X, Users } from 'lu
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { supabase } from '../../utils/supabase/client';
-import bcrypt from 'bcryptjs';
+import { checkEmailAvailability } from '../../utils/api/check-email';
 
 export function MobileLogin() {
   const [email, setEmail] = useState('');
@@ -29,6 +29,12 @@ export function MobileLogin() {
     confirmPassword: '',
     referralCode: ''
   });
+  const [referrerInfo, setReferrerInfo] = useState<{
+    name: string;
+    role: string;
+    email: string;
+  } | null>(null);
+  const [isCheckingReferral, setIsCheckingReferral] = useState(false);
   const { login } = useAuth();
 
   // 컴포넌트 마운트 시 저장된 이메일 불러오기
@@ -126,6 +132,42 @@ export function MobileLogin() {
     }
   };
 
+  // 추천인 코드 실시간 검증
+  const checkReferralCode = async (code: string) => {
+    if (!code.trim()) {
+      setReferrerInfo(null);
+      return;
+    }
+
+    setIsCheckingReferral(true);
+    try {
+      const { data: referrer, error } = await supabase
+        .from('users')
+        .select('user_id, role, tenant_id, center_name, username, email')
+        .eq('referral_code', code.toLowerCase())
+        .in('role', ['center', 'store'])
+        .single();
+
+      if (error || !referrer) {
+        setReferrerInfo(null);
+        setSignUpErrors(prev => ({ ...prev, referralCode: '유효하지 않은 추천인 코드입니다' }));
+      } else {
+        const roleName = referrer.role === 'center' ? '센터' : '가맹점';
+        setReferrerInfo({
+          name: referrer.center_name || referrer.username,
+          role: roleName,
+          email: referrer.email
+        });
+        setSignUpErrors(prev => ({ ...prev, referralCode: '' }));
+      }
+    } catch (error) {
+      console.error('추천인 코드 확인 오류:', error);
+      setReferrerInfo(null);
+    } finally {
+      setIsCheckingReferral(false);
+    }
+  };
+
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -181,6 +223,12 @@ export function MobileLogin() {
       hasError = true;
     }
 
+    // 추천인 코드 검증 (필수)
+    if (!signUpData.referralCode.trim()) {
+      errors.referralCode = '추천인 코드를 입력해주세요';
+      hasError = true;
+    }
+
     if (hasError) {
       setSignUpErrors(errors);
       toast.error('입력 정보를 확인해주세요', {
@@ -194,13 +242,11 @@ export function MobileLogin() {
       setIsLoading(true);
 
       // 이메일 중복 체크
-      const { data: existingUser } = await supabase
-        .from('users')
-        .select('email')
-        .eq('email', signUpData.email)
-        .single();
-
-      if (existingUser) {
+      const isEmailAvailable = await checkEmailAvailability(signUpData.email);
+      console.log('✅ 이메일 사용 가능 여부:', isEmailAvailable);
+      
+      if (!isEmailAvailable) {
+        console.log('❌ 이메일 중복 - 회원가입 중단');
         setSignUpErrors({ ...errors, email: '이미 사용 중인 이메일입니다' });
         toast.error('이미 사용 중인 이메일입니다', {
           duration: 3000,
@@ -209,44 +255,44 @@ export function MobileLogin() {
         });
         return;
       }
+      
+      console.log('✅ 이메일 사용 가능 - 회원가입 진행');
 
-      // 추천인 코드 검증 (선택사항)
+      // 추천인 코드 검증 (필수)
       let parentUserId = null;
       let tenantId = null;
       
-      if (signUpData.referralCode) {
-        const { data: referrer, error: referralError } = await supabase
-          .from('users')
-          .select('user_id, role, tenant_id, center_name, username, email')
-          .eq('referral_code', signUpData.referralCode.toLowerCase())
-          .in('role', ['center', 'store'])
-          .single();
+      const { data: referrer, error: referralError } = await supabase
+        .from('users')
+        .select('user_id, role, tenant_id, center_name, username, email')
+        .eq('referral_code', signUpData.referralCode.toLowerCase())
+        .in('role', ['center', 'store'])
+        .single();
 
-        if (referralError || !referrer) {
-          setSignUpErrors({ ...errors, referralCode: '유효하지 않은 추천인 코드입니다' });
-          toast.error('유효하지 않은 추천인 코드입니다', {
-            duration: 3000,
-            position: 'top-center',
-            icon: '⚠️'
-          });
-          return;
-        }
-
-        parentUserId = referrer.user_id;
-        tenantId = referrer.tenant_id || referrer.user_id;  // tenant_id가 없으면 본인 ID 사용
-        
-        toast.success(`${referrer.center_name || referrer.username}님의 추천으로 가입합니다 🎉`, {
+      if (referralError || !referrer) {
+        setSignUpErrors({ ...errors, referralCode: '유효하지 않은 추천인 코드입니다' });
+        toast.error('유효하지 않은 추천인 코드입니다', {
           duration: 3000,
           position: 'top-center',
+          icon: '⚠️'
         });
+        setIsLoading(false);
+        return;
       }
+
+      parentUserId = referrer.user_id;
+      tenantId = referrer.tenant_id || referrer.user_id;  // tenant_id가 없으면 본인 ID 사용
+      
+      toast.success(`${referrer.center_name || referrer.username}님의 추천으로 가입합니다 🎉`, {
+        duration: 3000,
+        position: 'top-center',
+      });
 
       // 1. Supabase Auth에 계정 생성
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: signUpData.email,
         password: signUpData.password,
         options: {
-          emailRedirectTo: undefined, // 이메일 확인 비활성화
           data: {
             role: 'user',
             username: signUpData.username,
@@ -254,70 +300,38 @@ export function MobileLogin() {
         }
       });
 
-      if (authError) {
-        // 상세 오류 로깅
-        console.error('Auth Error Details:', {
-          message: authError.message,
-          status: authError.status,
-          name: authError.name,
-          code: (authError as any).code
-        });
-        
-        // Auth 오류 메시지 변환
-        let errorMessage = authError.message || '회원가입 중 오류가 발생했습니다';
-        
-        // 구체적인 오류 메시지 파싱
-        if ((authError as any).code === 'over_email_send_rate_limit' || authError.message.includes('email rate limit')) {
-          errorMessage = '이메일 전송 한도가 초과되었습니다. 잠시 후 다시 시도해주세요';
-          toast.error(errorMessage, {
-            duration: 5000,
-            position: 'top-center',
-            icon: '⏳'
-          });
-          return;
-        } else if (authError.message.includes('already registered') || authError.message.includes('User already registered')) {
-          errorMessage = '이미 등록된 이메일입니다';
-          setSignUpErrors({ ...errors, email: errorMessage });
-        } else if (authError.message.includes('password') && !authError.message.includes('rate limit')) {
-          errorMessage = '비밀번호 형식이 올바르지 않습니다';
-          setSignUpErrors({ ...errors, password: errorMessage });
-        } else if (authError.message.includes('email') && !authError.message.includes('rate limit')) {
-          errorMessage = '이메일 형식이 올바르지 않습니다';
-          setSignUpErrors({ ...errors, email: errorMessage });
-        } else if (authError.message.includes('Signup requires a valid password')) {
-          errorMessage = '유효한 비밀번호를 입력해주세요 (8자 이상)';
-          setSignUpErrors({ ...errors, password: errorMessage });
-        }
-        
-        throw new Error(errorMessage);
-      }
-
-      if (!authData.user) {
-        throw new Error('사용자 생성에 실패했습니다');
-      }
-
-      // 2. users 테이블에 사용자 정보 저장
-      // 일반 회원의 referral_code는 소속 가맹점 코드 (입력한 추천인 코드)
-      const referralCode = signUpData.referralCode ? signUpData.referralCode.toLowerCase() : null;
+      // Auth 실패해도 계속 진행 (DB 로그인 가능하도록)
+      const userId = authData?.user?.id || crypto.randomUUID();
       
-      // 비밀번호 해시 생성
+      if (authError) {
+        console.log('⚠️ Auth 생성 실패 - DB 전용 계정으로 생성:', authError.message);
+      }
+
+      // 2. password를 bcrypt hash로 변환 (DB 로그인용)
+      const bcrypt = (await import('bcryptjs')).default;
       const passwordHash = await bcrypt.hash(signUpData.password, 10);
+
+      // 3. users 테이블에 사용자 정보 저장 (UPSERT)
+      // 일반 회원의 referral_code는 본인의 고유 코드 (이메일 @ 앞부분)
+      const referralCode = signUpData.email.split('@')[0].toLowerCase();
       
       const { error: dbError } = await supabase
         .from('users')
-        .insert({
-          user_id: authData.user.id, // Auth에서 생성된 UUID 사용
+        .upsert({
+          user_id: userId, // Auth에서 생성된 UUID 또는 새로 생성한 UUID
           email: signUpData.email,
           username: signUpData.username,
-          password_hash: passwordHash,  // 해시된 비밀번호 저장
-          referral_code: referralCode,  // 소속 가맹점 코드 (추천인 코드)
+          password_hash: passwordHash,  // DB 로그인을 위해 저장
+          referral_code: referralCode,  // 본인의 고유 초대 코드 (이메일 @ 앞부분)
           role: 'user',
           level: 'Basic',
-          parent_user_id: parentUserId,  // 추천인 UUID
+          parent_user_id: parentUserId,  // 추천인 UUID (나를 초대한 사람)
           tenant_id: tenantId,            // 소속 센터 UUID
-          status: 'pending',              // 승인대기 상태
-          is_active: false,               // 비활성화
+          status: 'active',               // status는 active/suspended/blocked만 허용
+          is_active: false,               // 승인 대기 (관리자 활성화 필요)
           kyc_status: 'pending',
+        }, {
+          onConflict: 'user_id'  // user_id 충돌 시 업데이트
         });
 
       if (dbError) {
@@ -525,6 +539,17 @@ export function MobileLogin() {
             </p>
           </div>
 
+          {/* Admin Login Link */}
+          <div className="mt-3 text-center">
+            <button 
+              onClick={() => window.location.hash = '#admin/login'}
+              className="text-slate-500 hover:text-slate-300 transition-colors text-xs flex items-center justify-center gap-1.5 mx-auto"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>관리자 로그인</span>
+            </button>
+          </div>
+
           {/* Security Badge */}
           <div className="mt-8 flex items-center justify-center gap-2 text-xs text-slate-500">
             <div className="w-2 h-2 rounded-full bg-green-400/50 animate-pulse"></div>
@@ -668,13 +693,17 @@ export function MobileLogin() {
                   <input
                     type="text"
                     value={signUpData.referralCode}
-                    onChange={(e) => setSignUpData({ ...signUpData, referralCode: e.target.value })}
+                    onChange={(e) => {
+                      setSignUpData({ ...signUpData, referralCode: e.target.value });
+                      checkReferralCode(e.target.value);
+                    }}
                     className={`w-full bg-slate-800/60 border rounded-xl pl-11 pr-4 py-3.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:bg-slate-800/80 transition-all ${
                       signUpErrors.referralCode 
                         ? 'border-red-500/70 focus:border-red-500' 
                         : 'border-slate-700/50 focus:border-cyan-500/40'
                     }`}
                     placeholder="추천인코드 입력"
+                    required
                   />
                 </div>
                 {signUpErrors.referralCode && (
@@ -683,7 +712,31 @@ export function MobileLogin() {
                     <span>{signUpErrors.referralCode}</span>
                   </p>
                 )}
-                {!signUpErrors.referralCode && (
+                {isCheckingReferral && (
+                  <div className="mt-2 flex items-center gap-2 text-xs text-slate-400 bg-slate-800/40 rounded-lg px-3 py-2">
+                    <div className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin"></div>
+                    <span>추천인 코드 확인 중...</span>
+                  </div>
+                )}
+                {!isCheckingReferral && referrerInfo && (
+                  <div className="mt-2 bg-cyan-500/10 border border-cyan-500/30 rounded-lg px-3 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <span className="text-lg mt-0.5">✓</span>
+                      <div className="flex-1">
+                        <p className="text-cyan-400 text-xs mb-0.5">
+                          소속 확인됨
+                        </p>
+                        <p className="text-white text-sm">
+                          {referrerInfo.name}
+                        </p>
+                        <p className="text-slate-400 text-xs mt-0.5">
+                          {referrerInfo.role}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {!isCheckingReferral && !referrerInfo && !signUpErrors.referralCode && signUpData.referralCode && (
                   <p className="text-slate-500 text-xs mt-1 pl-0.5">
                     추천코드는 관리자에게 문의하세요
                   </p>

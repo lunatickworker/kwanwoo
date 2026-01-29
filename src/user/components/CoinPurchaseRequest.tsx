@@ -146,7 +146,7 @@ export function CoinPurchaseRequest({
       {isLoading && (
         <div className="text-center py-12">
           <div className="w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-400">계좌 인증 상태 확인 중...</p>
+          <p className="text-slate-400">1원 계좌인증 상태 확인 중...</p>
         </div>
       )}
 
@@ -159,9 +159,9 @@ export function CoinPurchaseRequest({
               <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/20 border-2 border-red-500/50 flex items-center justify-center">
                 <X className="w-8 h-8 text-red-400" />
               </div>
-              <h3 className="text-white text-xl mb-3">계좌 인증이 필요합니다</h3>
+              <h3 className="text-white text-xl mb-3">1원 계좌인증이 필요합니다</h3>
               <p className="text-slate-300 mb-6">
-                코인 구매 요청을 하려면 먼저 1원 인증을 완료해주세요.
+                코인 구매 요청을 하려면 먼저 1원 계좌인증을 완료해주세요.
               </p>
               <button
                 onClick={() => onNavigate('settings')}

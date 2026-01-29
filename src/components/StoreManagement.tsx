@@ -85,66 +85,66 @@ export function StoreManagement() {
       return;
     }
 
-    // 이메일 중복 확인
-    const isEmailAvailable = await checkEmailAvailability(formData.email);
-    if (!isEmailAvailable) {
-      toast.error('이미 존재하는 이메일입니다');
-      return;
-    }
-
     try {
-      // 1. Supabase Auth에 계정 생성
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email,
-        password: formData.password,
-        options: {
-          emailRedirectTo: undefined, // 이메일 확인 비활성화
-          data: {
-            role: 'store',
-            username: formData.username,
-          }
-        }
-      });
-
-      if (authError) throw authError;
-
-      if (!authData.user) {
-        throw new Error('사용자 생성에 실패했습니다');
+      // 이메일 중복 확인
+      const isEmailAvailable = await checkEmailAvailability(formData.email);
+      if (!isEmailAvailable) {
+        toast.error('이미 존재하는 이메일입니다');
+        return;
       }
 
-      // 2. Users 테이블에 가맹점 정보 저장
-      const referralCode = formData.email.split('@')[0].toLowerCase();
-      
+      console.log('📝 Creating store account...');
+
       // 비밀번호 해시 생성
       const passwordHash = await bcrypt.hash(formData.password, 10);
+      const referralCode = formData.email.split('@')[0].toLowerCase();
+
+      // UUID 생성
+      const userId = crypto.randomUUID();
       
+      console.log('📝 Inserting user data with password_hash...', userId);
+      
+      // Users 테이블에 먼저 생성
       const { error: insertError } = await supabase
         .from('users')
         .insert({
-          user_id: authData.user.id, // Auth에서 생성된 UUID 사용
+          user_id: userId,
           username: formData.username,
           email: formData.email,
-          password_hash: passwordHash, // 해시된 비밀번호 저장
-          referral_code: referralCode, // 이메일 @ 앞부분을 추천인 코드로
+          password_hash: passwordHash,
+          referral_code: referralCode,
           role: 'store',
           status: 'active',
-          parent_user_id: user?.id, // 현재 센터가 부모
-          tenant_id: user?.id, // 현재 센터의 테넌트
+          parent_user_id: user?.id,
+          tenant_id: user?.id,
           is_active: true,
           kyc_status: 'pending',
           balance: {},
-          fee_rate: 5, // 기본 수수료율 5%
+          fee_rate: 5,
         });
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        console.error('Insert error:', insertError);
+        throw insertError;
+      }
 
+      console.log('✅ Store created in DB successfully');
+      
       toast.success('가맹점이 생성되었습니다');
-      setShowCreateModal(false);
       setFormData({ username: "", email: "", password: "" });
+      setShowCreateModal(false);
       fetchStores();
+      
     } catch (error: any) {
-      console.error('❌ Error:', error);
-      toast.error('가맹점 생성 중 오류가 발생했습니다');
+      console.error('❌ Create store error:', error);
+      
+      if (error.message.includes('invalid email') || error.message.includes('invalid')) {
+        toast.error('유효하지 않은 이메일 형식입니다. 실제 도메인을 사용해주세요 (예: @gmail.com, @naver.com)');
+      } else if (error.message.includes('already registered') || error.code === '23505') {
+        toast.error('이미 존재하는 이메일입니다');
+      } else {
+        toast.error(error.message || '가맹점 생성 중 오류가 발생했습니다');
+      }
     }
   };
 

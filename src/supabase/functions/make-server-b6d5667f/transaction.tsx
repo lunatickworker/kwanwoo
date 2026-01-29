@@ -139,7 +139,7 @@ transactionRouter.post('/send', async (c) => {
     // 4. Private Key 복호화
     console.log('🔓 Private Key 복호화 중...');
     const decryptResponse = await fetch(
-      `${Deno.env.get('SUPABASE_URL')}/functions/v1/server/wallet/decrypt-key`,
+      `${Deno.env.get('SUPABASE_URL')}/functions/v1/make-server-b6d5667f/wallet/decrypt-key`,
       {
         method: 'POST',
         headers: {

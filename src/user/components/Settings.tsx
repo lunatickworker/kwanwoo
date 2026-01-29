@@ -1,10 +1,11 @@
-import { ChevronRight, User, LogOut, CheckCircle, Crown, Bell, BellOff, MessageCircle, Lock } from 'lucide-react';
+import { ChevronRight, User, LogOut, CheckCircle, Crown, Bell, BellOff, MessageCircle, Lock, X } from 'lucide-react';
 import { Screen } from '../App';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner@2.0.3';
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../utils/supabase/client';
 import { getGasPolicyForUser, getGasPolicyDescription, type GasPaymentConfig } from '../../utils/biconomy/gasPolicy';
+import { getBiconomySettings } from '../../utils/systemSettings';
 
 interface SettingsProps {
   onNavigate: (screen: Screen) => void;
@@ -16,6 +17,7 @@ export function Settings({ onNavigate }: SettingsProps) {
   const [userLevel, setUserLevel] = useState<string>('Basic');
   const [gasPolicy, setGasPolicy] = useState<GasPaymentConfig | null>(null);
   const [isLoadingNotification, setIsLoadingNotification] = useState(false);
+  const [isBiconomyEnabled, setIsBiconomyEnabled] = useState(false);
   
   // 비밀번호 변경
   const [showPasswordChange, setShowPasswordChange] = useState(false);
@@ -35,6 +37,10 @@ export function Settings({ onNavigate }: SettingsProps) {
         // 가스비 정책 로드
         const policy = await getGasPolicyForUser(user.id);
         setGasPolicy(policy);
+
+        // Biconomy 설정 확인
+        const biconomySettings = await getBiconomySettings();
+        setIsBiconomyEnabled(biconomySettings?.enabled ?? false);
       } catch (error) {
         console.error('User data load error:', error);
       }
@@ -256,7 +262,7 @@ export function Settings({ onNavigate }: SettingsProps) {
         </div>
         <p className="text-slate-500 text-xs mt-1">※ 이메일은 계정 식별자로 사용되어 변경이 불가능합니다</p>
         
-        {/* 계좌인증 상태 배지 */}
+        {/* 1원 계좌인증 상태 배지 */}
         <div className="flex items-center justify-center gap-2 mt-3">
           {user?.account_verified && (
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm" style={{
@@ -308,6 +314,7 @@ export function Settings({ onNavigate }: SettingsProps) {
 
       {/* 계정 관리 섹션 */}
       <div className="space-y-3">
+        {/* 계좌 인증 버튼 - 항상 표시 (Biconomy 활성화 여부와 무관) */}
         <button
           onClick={() => onNavigate('account-verification')}
           className="w-full bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-xl p-4 hover:border-cyan-500/50 transition-all text-left"
@@ -318,13 +325,13 @@ export function Settings({ onNavigate }: SettingsProps) {
                 <CheckCircle className="w-5 h-5 text-cyan-400" />
               </div>
               <div>
-                <h3 className="text-white">1원 계좌인증</h3>
-                <p className="text-slate-400 text-sm">
-                  {user?.account_verified ? '인증 완료' : '출금을 위해 인증이 필요합니다'}
-                </p>
+                <div className="text-white font-medium">1원 계좌인증</div>
+                <div className="text-slate-400 text-sm">
+                  {isBiconomyEnabled ? '계좌 1원 입금 인증' : 'KYC 대신 인증 절차를 따릅니다'}
+                </div>
               </div>
             </div>
-            <ChevronRight className="w-5 h-5 text-cyan-400" />
+            <ChevronRight className="w-5 h-5 text-slate-500" />
           </div>
         </button>
 
