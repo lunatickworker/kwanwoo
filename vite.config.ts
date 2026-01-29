@@ -63,14 +63,15 @@
     minify: "terser",
     terserOptions: {
       compress: {
-        drop_console: true, // console.log 제거
+        drop_console: process.env.NODE_ENV === 'production',
         drop_debugger: true,
-        passes: 3, // 여러 번 통과
+        passes: 3,
+        pure_funcs: ['console.log', 'console.error', 'console.warn', 'console.info', 'console.debug'],
       },
       format: {
-        comments: false, // 모든 주석 제거
+        comments: false,
       },
-      mangle: true, // 변수명 축약
+      mangle: true,
     },
     rollupOptions: {
       output: {
