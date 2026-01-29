@@ -292,8 +292,8 @@ export function UserWalletManagement() {
           .select('balance, coin_type')
           .in('user_id', userIds),
         supabase
-          .from('coins')
-          .select('symbol, krw_price')
+          .from('supported_tokens')
+          .select('symbol, price_krw')
       ]);
       
       const walletsData = walletsResult.data;
@@ -305,7 +305,7 @@ export function UserWalletManagement() {
       // 코인별 시세 맵 생성
       const coinPriceMap = new Map<string, number>();
       coinsData?.forEach((coin) => {
-        coinPriceMap.set(coin.symbol, parseFloat(coin.krw_price) || 0);
+        coinPriceMap.set(coin.symbol, parseFloat(coin.price_krw) || 0);
       });
       
       // 총 자산 가치 계산 (코인 개수 × 원화 시세)
@@ -726,6 +726,42 @@ export function UserWalletManagement() {
     setAvailableCoins(available);
     setSelectedCoins([]);
     setShowAddCoinModal(true);
+  };
+
+  // 지갑 삭제 (마스터와 센터 관리자만)
+  const handleDeleteWallet = async (wallet: WalletData) => {
+    if (!selectedUser) return;
+
+    // 잔액이 있는 지갑은 삭제 불가
+    if (wallet.balance > 0) {
+      toast.error('잔액이 있는 지갑은 삭제할 수 없습니다. 먼저 잔액을 0으로 만들어주세요.');
+      return;
+    }
+
+    // 삭제 확인
+    const confirmed = window.confirm(
+      `${wallet.coin_type} 지갑을 삭제하시겠습니까?\n주소: ${wallet.address}\n\n⚠️ 이 작업은 되돌릴 수 없습니다.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase
+        .from('wallets')
+        .delete()
+        .eq('wallet_id', wallet.wallet_id)
+        .eq('user_id', selectedUser.user_id);
+
+      if (error) throw error;
+
+      toast.success(`${wallet.coin_type} 지갑이 삭제되었습니다`);
+      
+      // 지갑 목록 새로고침
+      await fetchUserWallets(selectedUser.user_id);
+    } catch (error: any) {
+      console.error('Delete wallet error:', error);
+      toast.error(error.message || '지갑 삭제에 실패했습니다');
+    }
   };
 
   const handleConfirmAddCoins = async () => {
@@ -1632,6 +1668,7 @@ export function UserWalletManagement() {
                               <button
                                 onClick={() => copyToClipboard(wallet.address, wallet.wallet_id)}
                                 className="p-2 text-slate-400 hover:text-cyan-400 transition-colors"
+                                title="주소 복사"
                               >
                                 {copiedAddress === wallet.wallet_id ? (
                                   <Check className="w-5 h-5 text-green-400" />
@@ -1639,6 +1676,18 @@ export function UserWalletManagement() {
                                   <Copy className="w-5 h-5" />
                                 )}
                               </button>
+
+                              {/* 지갑 삭제 버튼 - 마스터와 센터 관리자만 표시 */}
+                              {(user?.role === 'master' || user?.role === 'center') && (
+                                <button
+                                  onClick={() => handleDeleteWallet(wallet)}
+                                  className="p-2 text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title={wallet.balance > 0 ? "잔액이 있는 지갑은 삭제할 수 없습니다" : "지갑 삭제"}
+                                  disabled={wallet.balance > 0}
+                                >
+                                  <Trash2 className="w-5 h-5" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>

@@ -1,4 +1,4 @@
-import { Home, Wallet, ArrowLeftRight, User } from 'lucide-react';
+import { Home, Wallet, ArrowLeftRight, User, MessageCircle } from 'lucide-react';
 import { Screen } from '../App';
 
 interface BottomNavProps {
@@ -9,7 +9,7 @@ interface BottomNavProps {
 export function BottomNav({ currentScreen, onNavigate }: BottomNavProps) {
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-xl border-t border-cyan-500/20 z-20">
-      <div className="grid grid-cols-4 gap-1 p-2">
+      <div className="grid grid-cols-5 gap-1 p-2">
         <button
           onClick={() => onNavigate('home')}
           className={`flex flex-col items-center gap-1 py-3 rounded-lg transition-all ${
@@ -36,6 +36,15 @@ export function BottomNav({ currentScreen, onNavigate }: BottomNavProps) {
         >
           <ArrowLeftRight className="w-5 h-5" />
           <span className="text-xs">거래</span>
+        </button>
+        <button
+          onClick={() => onNavigate('support')}
+          className={`flex flex-col items-center gap-1 py-3 rounded-lg transition-all ${
+            currentScreen === 'support' ? 'text-cyan-400' : 'text-slate-400 hover:text-cyan-300'
+          }`}
+        >
+          <MessageCircle className="w-5 h-5" />
+          <span className="text-xs">고객센터</span>
         </button>
         <button
           onClick={() => onNavigate('settings')}

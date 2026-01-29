@@ -184,6 +184,7 @@ export function Header({ onNavigate }: HeaderProps) {
       try {
         // 계층 구조에 따라 하위 사용자 ID 조회
         const hierarchyUserIds = await getHierarchyUserIds(user.id, user.role);
+        console.log('🔔 [Header] 알림 확인 - 하위 사용자 IDs:', hierarchyUserIds);
 
         // 회원가입 알림 (승인대기 상태만, 하위만)
         const { count: signupCount } = await supabase
@@ -205,16 +206,29 @@ export function Header({ onNavigate }: HeaderProps) {
         setVerificationNotifications(verificationCount || 0);
 
         // 구매 요청 알림 (입출금 요청, 하위만)
-        const { count: orderCount } = await supabase
-          .from('deposit_withdrawal_requests')
-          .select('*', { count: 'exact', head: true })
+        const { data: transferData, count: orderCount, error: transferError } = await supabase
+          .from('transfer_requests')
+          .select('*', { count: 'exact' })
           .in('user_id', hierarchyUserIds)
           .eq('status', 'pending');
         
+        console.log('🔔 [Header] transfer_requests 조회 결과:', {
+          count: orderCount,
+          data: transferData,
+          error: transferError,
+          hierarchyUserIds
+        });
+        
         setOrderNotifications(orderCount || 0);
 
-        // 고객센터 알림 (임시 - 실제로는 support_tickets 테이블에서)
-        setSupportNotifications(0);
+        // 고객센터 알림 - support_messages에서 읽지 않은 사용자 메시지 카운트
+        const { count: supportCount } = await supabase
+          .from('support_messages')
+          .select('*', { count: 'exact', head: true })
+          .eq('sender_type', 'user')
+          .eq('is_read', false);
+        
+        setSupportNotifications(supportCount || 0);
 
         // 가맹점 입금 알림 (센터만)
         const { count: depositCount } = await supabase
@@ -224,6 +238,14 @@ export function Header({ onNavigate }: HeaderProps) {
           .eq('status', 'pending');
         
         setDepositNotifications(depositCount || 0);
+
+        console.log('🔔 [Header] 알림 개수:', {
+          signup: signupCount,
+          verification: verificationCount,
+          order: orderCount,
+          support: supportCount,
+          deposit: depositCount
+        });
       } catch (error) {
         console.error('알림 조회 실패:', error);
       }
@@ -271,7 +293,7 @@ export function Header({ onNavigate }: HeaderProps) {
         {
           event: '*',
           schema: 'public',
-          table: 'deposit_withdrawal_requests'
+          table: 'transfer_requests'
         },
         () => {
           fetchNotifications();
@@ -295,6 +317,22 @@ export function Header({ onNavigate }: HeaderProps) {
       )
       .subscribe();
 
+    // 실시간 구독: 고객센터 메시지
+    const supportSub = supabase
+      .channel('support_messages_notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'support_messages'
+        },
+        () => {
+          fetchNotifications();
+        }
+      )
+      .subscribe();
+
     // 10초마다 갱신 (fallback)
     const interval = setInterval(fetchNotifications, 10000);
     
@@ -303,6 +341,7 @@ export function Header({ onNavigate }: HeaderProps) {
       usersSub.unsubscribe();
       depositWithdrawalSub.unsubscribe();
       depositSub.unsubscribe();
+      supportSub.unsubscribe();
       clearInterval(interval);
     };
   }, [showNotifications, user?.id, user?.role]);

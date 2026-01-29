@@ -1,4 +1,4 @@
-import { Home, Wallet, ArrowLeftRight, User, Activity } from 'lucide-react';
+import { Home, Wallet, ArrowLeftRight, User, Activity, MessageCircle } from 'lucide-react';
 import { Screen } from '../App';
 
 interface SidebarProps {
@@ -12,6 +12,7 @@ export function Sidebar({ currentScreen, onNavigate }: SidebarProps) {
     { id: 'wallets' as Screen, icon: Wallet, label: '지갑' },
     { id: 'transactions' as Screen, icon: ArrowLeftRight, label: '거래' },
     { id: 'settings' as Screen, icon: User, label: '더보기' },
+    { id: 'support' as Screen, icon: MessageCircle, label: '고객센터' },
   ];
 
   return (

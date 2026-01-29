@@ -2,3 +2,4 @@ node_modules
 Docs
 database
 guidelines
+*.md

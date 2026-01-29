@@ -385,23 +385,6 @@ export function Settings({ onNavigate }: SettingsProps) {
         </div>
       </div>
 
-      {/* 고객센터 */}
-      <div className="bg-slate-800/50 border border-cyan-500/30 rounded-xl overflow-hidden" style={{ boxShadow: '0 0 10px rgba(6, 182, 212, 0.1)' }}>
-        <div className="p-4 pb-2">
-          <div className="text-slate-300">고객 지원</div>
-        </div>
-        <button 
-          onClick={() => onNavigate('support')}
-          className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-700/30 transition-colors border-t border-slate-700/50"
-        >
-          <div className="flex items-center gap-3">
-            <MessageCircle className="w-5 h-5 text-cyan-400" />
-            <span className="text-slate-300">실시간 문의</span>
-          </div>
-          <ChevronRight className="w-5 h-5 text-slate-400" />
-        </button>
-      </div>
-
       {/* 버전 정보 */}
       <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-4">
         <div className="flex items-center justify-between text-sm">

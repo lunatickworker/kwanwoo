@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { ArrowUpRight, ArrowDownLeft, Repeat, TrendingUp, Eye, EyeOff, Zap, ShoppingCart, Coins } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, Repeat, TrendingUp, Eye, EyeOff, Zap, ShoppingCart, Coins, X } from 'lucide-react';
 import { Screen, WalletData, Transaction } from '../App';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { toast } from 'sonner';
 
 interface HomeProps {
   wallets: WalletData[];
@@ -19,6 +20,8 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
   const [prices, setPrices] = useState<{ [key: string]: number }>({});
   const [accountVerified, setAccountVerified] = useState<boolean>(false);
   const [coinIcons, setCoinIcons] = useState<Map<string, string>>(new Map());
+  const [activeTab, setActiveTab] = useState<'transactions' | 'purchase-requests'>('transactions');
+  const [purchaseRequests, setPurchaseRequests] = useState<any[]>([]);
 
   // 코인 아이콘 로드
   useEffect(() => {
@@ -50,18 +53,54 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     const checkVerification = async () => {
       if (!user?.id) return;
 
-      const { data } = await supabase
-        .from('users')
-        .select('account_verification_status')
-        .eq('user_id', user.id)
-        .single();
+      try {
+        // account_verifications 테이블에서 최신 인증 정보 확인
+        const { data, error } = await supabase
+          .from('account_verifications')
+          .select('status')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
 
-      if (data) {
-        setAccountVerified(data.account_verification_status === 'verified');
+        if (error && error.code !== 'PGRST116') {
+          console.error('Verification check error:', error);
+          setAccountVerified(false);
+        } else if (data) {
+          // status가 'verified'이면 인증 완료
+          setAccountVerified(data.status === 'verified');
+        } else {
+          // 데이터가 없으면 미인증
+          setAccountVerified(false);
+        }
+      } catch (error) {
+        console.error('Verification check error:', error);
+        setAccountVerified(false);
       }
     };
 
     checkVerification();
+
+    // 실시간 인증 상태 변경 구독
+    const channel = supabase
+      .channel('user_verification_status')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'account_verifications',
+          filter: `user_id=eq.${user?.id}`
+        },
+        () => {
+          checkVerification();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   // 토큰 가격 정보 가져오기
@@ -139,6 +178,74 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
       }
     }
   }, [wallets, prices]);
+
+  // 코인 구매 요청 로드
+  useEffect(() => {
+    const fetchPurchaseRequests = async () => {
+      if (!user?.id) return;
+
+      try {
+        const { data, error } = await supabase
+          .from('transfer_requests')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('request_type', 'purchase')
+          .order('created_at', { ascending: false })
+          .limit(5);
+
+        if (error) throw error;
+
+        setPurchaseRequests(data || []);
+      } catch (error) {
+        console.error('Load purchase requests error:', error);
+      }
+    };
+
+    fetchPurchaseRequests();
+
+    // 실시간 구독
+    const channel = supabase
+      .channel('user_purchase_requests')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'transfer_requests',
+          filter: `user_id=eq.${user?.id}`,
+        },
+        () => {
+          fetchPurchaseRequests();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
+
+  // 구매 요청 취소
+  const handleCancelRequest = async (requestId: string) => {
+    try {
+      const { error } = await supabase
+        .from('transfer_requests')
+        .update({ 
+          status: 'cancelled',
+          cancelled_at: new Date().toISOString()
+        })
+        .eq('request_id', requestId)
+        .eq('user_id', user?.id)
+        .eq('status', 'pending');
+
+      if (error) throw error;
+
+      toast.success('구매 요청이 취소되었습니다');
+    } catch (error: any) {
+      console.error('Cancel request error:', error);
+      toast.error(error.message || '취소 처리 중 오류가 발생했습니다');
+    }
+  };
 
   const recentTransactions = transactions.slice(0, 3);
 
@@ -331,76 +438,173 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
         </div>
       </div>
 
-      {/* 최근 거래 내역 */}
+      {/* 거래 내역 */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white">최근 거래</h3>
+          <h3 className="text-white">거래 내역</h3>
+        </div>
+
+        {/* 탭 버튼 */}
+        <div className="flex gap-2 mb-4 border-b border-slate-700/50">
           <button
-            onClick={() => onNavigate('transactions')}
-            className="text-cyan-400 text-sm hover:text-cyan-300 transition-colors"
+            onClick={() => setActiveTab('transactions')}
+            className={`px-4 py-2 transition-colors border-b-2 ${
+              activeTab === 'transactions'
+                ? 'text-cyan-400 border-cyan-500'
+                : 'text-slate-400 border-transparent hover:text-slate-300'
+            }`}
           >
-            전체보기
+            입출금 내역
+          </button>
+          <button
+            onClick={() => setActiveTab('purchase-requests')}
+            className={`px-4 py-2 transition-colors border-b-2 ${
+              activeTab === 'purchase-requests'
+                ? 'text-cyan-400 border-cyan-500'
+                : 'text-slate-400 border-transparent hover:text-slate-300'
+            }`}
+          >
+            코인 구매 요청
           </button>
         </div>
 
-        <div className="space-y-3">
-          {recentTransactions.length === 0 ? (
-            <div className="text-center py-12 bg-slate-800/30 border border-slate-700/50 rounded-xl">
-              <p className="text-slate-400">거래 내역이 없습니다</p>
-            </div>
-          ) : (
-            recentTransactions.map((tx) => (
-              <div
-                key={tx.id}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        tx.type === 'deposit'
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-purple-500/20 text-purple-400'
-                      }`}
-                    >
-                      {tx.type === 'deposit' ? (
-                        <ArrowDownLeft className="w-5 h-5" />
-                      ) : (
-                        <ArrowUpRight className="w-5 h-5" />
-                      )}
+        {/* 입출금 내역 탭 */}
+        {activeTab === 'transactions' && (
+          <div className="space-y-3">
+            {recentTransactions.length === 0 ? (
+              <div className="text-center py-12 bg-slate-800/30 border border-slate-700/50 rounded-xl">
+                <p className="text-slate-400">거래 내역이 없습니다</p>
+              </div>
+            ) : (
+              recentTransactions.map((tx) => (
+                <div
+                  key={tx.id}
+                  className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                          tx.type === 'deposit'
+                            ? 'bg-green-500/20 text-green-400'
+                            : 'bg-purple-500/20 text-purple-400'
+                        }`}
+                      >
+                        {tx.type === 'deposit' ? (
+                          <ArrowDownLeft className="w-5 h-5" />
+                        ) : (
+                          <ArrowUpRight className="w-5 h-5" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-white text-sm">
+                          {tx.type === 'deposit' ? '입금' : '출금'}
+                        </p>
+                        <p className="text-slate-400 text-xs">{tx.coin_type}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-white text-sm">
-                        {tx.type === 'deposit' ? '입금' : '출금'}
+                    <div className="text-right">
+                      <p className="text-white">
+                        {tx.type === 'deposit' ? '+' : '-'}{tx.amount} {tx.coin_type}
                       </p>
-                      <p className="text-slate-400 text-xs">{tx.coin_type}</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-white">
-                      {tx.type === 'deposit' ? '+' : '-'}{tx.amount} {tx.coin_type}
-                    </p>
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        tx.status === 'confirmed'
-                          ? 'bg-green-500/20 text-green-400'
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${
+                          tx.status === 'confirmed'
+                            ? 'bg-green-500/20 text-green-400'
+                            : tx.status === 'pending'
+                            ? 'bg-amber-500/20 text-amber-400'
+                            : 'bg-cyan-500/20 text-cyan-400'
+                        }`}
+                      >
+                        {tx.status === 'confirmed'
+                          ? '완료'
                           : tx.status === 'pending'
-                          ? 'bg-amber-500/20 text-amber-400'
-                          : 'bg-cyan-500/20 text-cyan-400'
-                      }`}
-                    >
-                      {tx.status === 'confirmed'
-                        ? '완료'
-                        : tx.status === 'pending'
-                        ? '대기'
-                        : '처리중'}
-                    </span>
+                          ? '대기'
+                          : '처리중'}
+                      </span>
+                    </div>
                   </div>
                 </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* 코인 구매 요청 탭 */}
+        {activeTab === 'purchase-requests' && (
+          <div className="space-y-3">
+            {purchaseRequests.length === 0 ? (
+              <div className="text-center py-12 bg-slate-800/30 border border-slate-700/50 rounded-xl">
+                <p className="text-slate-400">구매 요청 내역이 없습니다</p>
               </div>
-            ))
-          )}
-        </div>
+            ) : (
+              purchaseRequests.map((request) => {
+                const isPending = request.status === 'pending';
+                const isApproved = request.status === 'approved';
+                const isRejected = request.status === 'rejected';
+                const isCancelled = request.status === 'cancelled';
+
+                let statusText;
+                let statusClass;
+
+                if (isPending) {
+                  statusText = '대기중';
+                  statusClass = 'bg-amber-500/20 text-amber-400';
+                } else if (isApproved) {
+                  statusText = '승인됨';
+                  statusClass = 'bg-green-500/20 text-green-400';
+                } else if (isRejected) {
+                  statusText = '거부됨';
+                  statusClass = 'bg-red-500/20 text-red-400';
+                } else {
+                  statusText = '취소됨';
+                  statusClass = 'bg-slate-500/20 text-slate-400';
+                }
+
+                return (
+                  <div
+                    key={request.request_id}
+                    className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                          <ShoppingCart className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-white text-sm">코인 구매 요청</p>
+                          <p className="text-slate-400 text-xs">{request.coin_type}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-right">
+                          <p className="text-white">
+                            +{request.amount.toLocaleString()} {request.coin_type}
+                          </p>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${statusClass}`}>
+                            {statusText}
+                          </span>
+                        </div>
+                        {isPending && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCancelRequest(request.request_id);
+                            }}
+                            className="w-6 h-6 rounded-full bg-red-500/20 hover:bg-red-500/30 flex items-center justify-center transition-colors ml-2"
+                            title="취소"
+                          >
+                            <X className="w-4 h-4 text-red-400" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
       {/* 스마트 거래 배너 */}

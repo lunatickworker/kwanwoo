@@ -204,9 +204,39 @@ export function AccountVerificationManagement() {
             toast.success('지갑 생성 완료');
           }
         }
-      } else {
-        // Biconomy 비활성화 시 지갑 생성 건너뛰기
-        console.log('Biconomy disabled, skipping wallet creation');
+      } else if (!isBiconomyEnabled) {
+        // Biconomy 비활성화 시에도 일반 지갑 생성
+        if (!existingWallets || existingWallets.length === 0) {
+          // 기존 지갑이 없으면 새로 생성 (일반 주소 없이)
+          const walletsToCreate = [
+            {
+              user_id: verification.user_id,
+              coin_type: 'KRWQ',
+              address: '', // 빈 주소로 생성, 나중에 업데이트 가능
+              balance: 0,
+              status: 'active',
+            },
+            {
+              user_id: verification.user_id,
+              coin_type: 'USDT',
+              address: '', // 빈 주소로 생성, 나중에 업데이트 가능
+              balance: 0,
+              status: 'active',
+            },
+          ];
+
+          const { error: walletError } = await supabase
+            .from('wallets')
+            .insert(walletsToCreate);
+
+          if (walletError) {
+            console.error('Wallet creation error:', walletError);
+            toast.warning('지갑 생성 중 오류 발생');
+          } else {
+            toast.success('지갑 생성 완료');
+          }
+        }
+        console.log('Biconomy disabled, created basic wallets');
       }
 
       toast.success('계좌인증 승인 완료!');
