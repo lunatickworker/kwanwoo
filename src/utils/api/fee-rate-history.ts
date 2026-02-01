@@ -71,6 +71,49 @@ export async function getFeeRateHistory(centerId: string) {
     if (error) throw error;
 
     const feeRateHistory = data?.metadata?.fee_rate_history || [];
+    
+    // 변경자 정보 추가
+    if (feeRateHistory.length > 0) {
+      // 모든 변경자 ID 수집
+      const changedByIds = new Set<string>();
+      feeRateHistory.forEach((history: any) => {
+        if (history.changed_by && history.changed_by !== 'system') {
+          changedByIds.add(history.changed_by);
+        }
+      });
+
+      // 변경자 정보 일괄 조회
+      if (changedByIds.size > 0) {
+        const { data: usersData, error: usersError } = await supabase
+          .from('users')
+          .select('user_id, username, center_name, role')
+          .in('user_id', Array.from(changedByIds));
+
+        if (!usersError && usersData) {
+          // 변경자 ID -> 이름 매핑 생성
+          const userMap = new Map<string, string>();
+          usersData.forEach(u => {
+            const displayName = u.center_name || u.username || u.user_id.slice(0, 8);
+            userMap.set(u.user_id, displayName);
+          });
+
+          // 각 히스토리 항목에 변경자 이름 추가
+          feeRateHistory.forEach((item: any) => {
+            if (item.changed_by === 'system') {
+              item.changed_by_name = '시스템';
+            } else {
+              item.changed_by_name = userMap.get(item.changed_by) || item.changed_by.slice(0, 8);
+            }
+          });
+        }
+      } else {
+        // 모두 시스템 변경인 경우
+        feeRateHistory.forEach((item: any) => {
+          item.changed_by_name = '시스템';
+        });
+      }
+    }
+    
     return { success: true, history: feeRateHistory };
   } catch (error: any) {
     console.error('수수료율 변경 이력 조회 실패:', error);

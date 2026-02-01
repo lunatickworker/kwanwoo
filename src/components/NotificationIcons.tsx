@@ -47,7 +47,7 @@ export function NotificationIcons({ notifications, onCategoryClick, selectedCate
     !n.read && (n.type.includes('verification'))
   ).length;
   const purchaseCount = notifications.filter(n => 
-    !n.read && (n.type.includes('purchase'))
+    !n.read && (n.type.includes('purchase') || n.type === 'store_coin_sale')
   ).length;
 
   // 새 알림이 올 때 펄스 효과
@@ -58,7 +58,7 @@ export function NotificationIcons({ notifications, onCategoryClick, selectedCate
         setPulseCategory('signup');
       } else if (latestNotif.type.includes('verification')) {
         setPulseCategory('verification');
-      } else if (latestNotif.type.includes('purchase')) {
+      } else if (latestNotif.type.includes('purchase') || latestNotif.type === 'store_coin_sale') {
         setPulseCategory('purchase');
       }
 

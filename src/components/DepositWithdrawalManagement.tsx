@@ -1,27 +1,25 @@
-import { ArrowDownCircle, ArrowUpCircle, CheckCircle, XCircle, Clock, Filter, Search, ChevronLeft, ChevronRight, Eye, DollarSign, ExternalLink, FileText, Coins as CoinsIcon } from "lucide-react";
+import { ArrowDownCircle, ArrowUpCircle, CheckCircle, XCircle, Clock, Filter, Search, ChevronLeft, ChevronRight, Eye, DollarSign, ExternalLink, FileText, Coins as CoinsIcon, Landmark } from "lucide-react";
 import { useState, useEffect } from "react";
 import { supabase } from "../utils/supabase/client";
 import { useAuth } from "../contexts/AuthContext";
 import { SUPABASE_CONFIG } from "../utils/config";
 import { toast } from "sonner@2.0.3";
 import { getHierarchyUserIds } from "../utils/api/query-helpers";
+import { getCenterOperationMode, sendProductionTransaction, generateDevTxHash } from "../utils/blockchain/centerModeHelper";
+import { estimateGas } from "../utils/blockchain/transaction";
+import { approveTransferRequest, approveCoinSale } from "../utils/depositApprovalHelper";
 
 interface TransferRequest {
   request_id: string;
-  user_id: string;
-  wallet_id: string;
-  coin_type: string;
+  store_id: string;
   amount: number;
   status: string;
-  user_note: string | null;
+  request_note: string | null;
   admin_note: string | null;
-  approved_by: string | null;
   created_at: string;
-  updated_at: string;
   approved_at: string | null;
-  tx_hash?: string | null;
-  username?: string;
-  email?: string;
+  store_name?: string;
+  store_email?: string;
 }
 
 interface Deposit {
@@ -63,6 +61,23 @@ interface Withdrawal {
   email?: string;
 }
 
+interface CoinSaleRequest {
+  sale_id: string;
+  store_id: string;
+  center_id: string;
+  coin_type: string;
+  amount: number;
+  krw_value: number;
+  status: string;
+  request_note: string | null;
+  admin_note: string | null;
+  approved_by: string | null;
+  created_at: string;
+  approved_at: string | null;
+  store_name?: string;
+  store_email?: string;
+}
+
 interface TransactionReceipt {
   txHash: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
@@ -73,13 +88,14 @@ interface TransactionReceipt {
   confirmations?: number;
 }
 
-type TabType = "transfer_requests" | "deposits" | "withdrawals";
+type TabType = "transfer_requests" | "deposits" | "withdrawals" | "coin_sales";
 
 export function DepositWithdrawalManagement() {
   const { user } = useAuth();
   const [transferRequests, setTransferRequests] = useState<TransferRequest[]>([]);
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
+  const [coinSales, setCoinSales] = useState<CoinSaleRequest[]>([]);
   
   // 가맹점 계정은 기본 탭을 "deposits"로 설정
   const initialTab = user?.role === 'store' ? 'deposits' : 'transfer_requests';
@@ -91,8 +107,18 @@ export function DepositWithdrawalManagement() {
   const itemsPerPage = 10;
 
   const [selectedRequest, setSelectedRequest] = useState<TransferRequest | null>(null);
+  const [selectedCoinSale, setSelectedCoinSale] = useState<CoinSaleRequest | null>(null);
   const [adminNote, setAdminNote] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [gasSponsorEnabled, setGasSponsorEnabled] = useState(true); // 가스비 지원 여부
+  
+  // 가스비 추정 정보
+  const [gasEstimate, setGasEstimate] = useState<{
+    estimatedCost: string;
+    token: string;
+  } | null>(null);
+  const [isEstimatingGas, setIsEstimatingGas] = useState(false);
+  const [operationMode, setOperationMode] = useState<'development' | 'production'>('development');
   
   // Transaction Receipt 모달
   const [showReceiptModal, setShowReceiptModal] = useState(false);
@@ -101,6 +127,16 @@ export function DepositWithdrawalManagement() {
 
   // 코인 아이콘 매핑
   const [coinIcons, setCoinIcons] = useState<Record<string, string>>({});
+
+  // 탭 전환 처리 (localStorage 연동)
+  useEffect(() => {
+    const targetTab = localStorage.getItem('admin_deposit_active_tab');
+    if (targetTab && ['transfer_requests', 'deposits', 'withdrawals', 'coin_sales'].includes(targetTab)) {
+      setActiveTab(targetTab as TabType);
+      // 일회성이므로 삭제 (선택사항, 하지만 유지하는게 나을수도? 여기서는 삭제하여 새로고침시 기본값 로직과 충돌 방지)
+      localStorage.removeItem('admin_deposit_active_tab');
+    }
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -113,6 +149,14 @@ export function DepositWithdrawalManagement() {
         localStorage.setItem(lastViewedKey, new Date().toISOString());
         console.log('✅ 가맹점 입금 내역 확인 완료:', new Date().toISOString());
       }
+
+      // 트랜잭션 모니터 업데이트 이벤트 리스너
+      const handleTransactionUpdate = (event: CustomEvent) => {
+        console.log('🔄 트랜잭션 업데이트 감지 (관리자):', event.detail);
+        fetchData(); // 데이터 새로고침
+      };
+
+      window.addEventListener('transaction-updated', handleTransactionUpdate as EventListener);
 
       // 실시간 업데이트
       const channel = supabase
@@ -140,13 +184,19 @@ export function DepositWithdrawalManagement() {
             }
           }
         )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'store_coin_sales' },
+          () => fetchData()
+        )
         .subscribe();
 
       return () => {
+        window.removeEventListener('transaction-updated', handleTransactionUpdate as EventListener);
         supabase.removeChannel(channel);
       };
     }
-  }, [user, activeTab]);
+  }, [user]); // ✅ activeTab 제거 - 탭 변경이 데이터 fetch를 트리거하면 안 됨
 
   const fetchData = async () => {
     if (!user || !user.role) return;
@@ -201,6 +251,35 @@ export function DepositWithdrawalManagement() {
           username: item.users?.username,
           email: item.users?.email
         })));
+
+        // 가맹점이 입금 탭을 볼 때 자동으로 viewed_by_store = true 처리
+        if (user.role === 'store' && activeTab === 'deposits') {
+          const unviewedDepositIds = depositData
+            .filter((d: any) => d.viewed_by_store === false)
+            .map((d: any) => d.deposit_id);
+
+          if (unviewedDepositIds.length > 0) {
+            console.log('✅ 미확인 입금을 확인 처리:', unviewedDepositIds.length, unviewedDepositIds);
+            
+            const { data: updatedData, error: updateError } = await supabase
+              .from('deposits')
+              .update({ 
+                viewed_by_store: true, 
+                viewed_at: new Date().toISOString() 
+              })
+              .in('deposit_id', unviewedDepositIds)
+              .select();
+
+            if (updateError) {
+              console.error('❌ viewed_by_store 업데이트 실패:', updateError);
+            } else {
+              console.log('✅ viewed_by_store 업데이트 성공:', updatedData?.length);
+              
+              // Header의 알림 배지를 즉시 업데이트하기 위해 커스텀 이벤트 발생
+              window.dispatchEvent(new CustomEvent('deposits-viewed'));
+            }
+          }
+        }
       }
 
       // Withdrawals
@@ -225,10 +304,40 @@ export function DepositWithdrawalManagement() {
         })));
       }
 
+      // Coin Sales (Store -> Center)
+      let salesQuery = supabase
+        .from('store_coin_sales')
+        .select(`
+          *,
+          users!store_coin_sales_store_id_fkey(username, email)
+        `);
+
+      // 센터는 자신에게 들어온 요청 + 하위 가맹점 요청 조회 가능
+      // 마스터는 전체
+      if (user.role === 'center') {
+        salesQuery = salesQuery.eq('center_id', user.id);
+      } else if (user.role === 'store') {
+        salesQuery = salesQuery.eq('store_id', user.id);
+      } else if (user.role !== 'master') {
+        // Agency 등은 하위 store_id로 필터링
+        salesQuery = salesQuery.in('store_id', allowedUserIds);
+      }
+
+      const { data: salesData } = await salesQuery.order('created_at', { ascending: false });
+
+      if (salesData) {
+        setCoinSales(salesData.map((item: any) => ({
+          ...item,
+          store_name: item.users?.username,
+          store_email: item.users?.email
+        })));
+      }
+
       console.log('📊 Data loaded:', {
         transfers: transferData?.length || 0,
         deposits: depositData?.length || 0,
-        withdrawals: withdrawalData?.length || 0
+        withdrawals: withdrawalData?.length || 0,
+        coinSales: salesData?.length || 0
       });
 
     } catch (error) {
@@ -256,7 +365,7 @@ export function DepositWithdrawalManagement() {
     }
   };
 
-  // 코인 구매 요청 승인
+  // 코인 구매 요청 승인 (User -> Center)
   const handleApproveRequest = async (request: TransferRequest) => {
     if (!adminNote.trim()) {
       toast.error('관리자 메모를 입력해주세요');
@@ -271,469 +380,258 @@ export function DepositWithdrawalManagement() {
     setIsProcessing(true);
 
     try {
-      const adminId = user.id; // AuthContext에서 가져온 사용자 ID
+      // 1. 사용자의 가스비 지원 여부 업데이트
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ gas_sponsor_enabled: gasSponsorEnabled })
+        .eq('user_id', request.user_id);
 
-      console.log('🔍 관리자 지갑 조회:', { adminId, coin_type: request.coin_type });
-
-      // 디버깅: 관리자의 모든 지갑 조회
-      const { data: allAdminWallets } = await supabase
-        .from('wallets')
-        .select('*')
-        .eq('user_id', adminId);
-      
-      console.log('👛 관리자의 전체 지갑 목록:', allAdminWallets);
-
-      // 1. 관리자 지갑 정보 조회
-      const { data: adminWalletData, error: adminWalletError } = await supabase
-        .from('wallets')
-        .select('address')
-        .eq('user_id', adminId)
-        .eq('coin_type', request.coin_type)
-        .single();
-
-      console.log('📦 관리자 지갑 조회 결과:', { adminWalletData, adminWalletError });
-
-      if (adminWalletError || !adminWalletData) {
-        // 더 상세한 에러 메시지
-        const errorMsg = `관리자의 ${request.coin_type} 지갑을 찾을 수 없습니다. 지갑 관리에서 ${request.coin_type} 지갑을 먼저 생성해주세요.`;
-        console.error('❌ 관리자 지갑 없음:', errorMsg, { adminId, coin_type: request.coin_type });
-        throw new Error(errorMsg);
+      if (updateError) {
+        console.error('❌ 가스비 지원 설정 업데이트 실패:', updateError);
+        toast.error('가스비 지원 설정 업데이트에 실패했습니다');
+        setIsProcessing(false);
+        return;
       }
 
-      // 2. 사용자 지갑 정보 조회
-      const { data: userWalletData, error: userWalletError } = await supabase
-        .from('wallets')
-        .select('address, balance')
-        .eq('wallet_id', request.wallet_id)
-        .single();
-
-      if (userWalletError || !userWalletData) {
-        throw new Error('사용자 지갑을 찾을 수 없습니다');
-      }
-
-      // 3. 코인 정보 조회 (chain_id 필요)
-      const { data: coinData, error: coinError } = await supabase
-        .from('supported_tokens')
-        .select('chain_id, contract_address, decimals')
-        .eq('symbol', request.coin_type)
-        .single();
-
-      if (coinError || !coinData) {
-        throw new Error('코인 정보를 찾을 수 없습니다');
-      }
-
-      toast.info('블록체인 전송을 시작합니다...');
-
-      // 4. Biconomy Supertransaction API로 실제 전송 (Backend 호출)
-      const backendUrl = `${SUPABASE_CONFIG.backendUrl}/api/biconomy/transfer`;
-      console.log('🌐 Backend URL:', backendUrl);
-      
-      const transferResponse = await fetch(backendUrl, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_CONFIG.anonKey}`
-        },
-        body: JSON.stringify({
-          chainId: coinData.chain_id,
-          from: adminWalletData.address,
-          to: userWalletData.address,
-          token: request.coin_type,
-          amount: request.amount.toString(),
-          gasPayment: {
-            sponsor: true  // 관리자가 가스비 스폰서
-          }
-        })
+      console.log('✅ 가스비 지원 설정 업데이트:', {
+        userId: request.user_id,
+        gasSponsorEnabled
       });
 
-      console.log('📡 Transfer Response Status:', transferResponse.status);
-
-      const transferResult = await transferResponse.json();
-      console.log('📦 Transfer Result:', transferResult);
-
-      if (!transferResponse.ok || !transferResult.success) {
-        // 잔액 부족 에러 처리
-        if (transferResult.code === 'INSUFFICIENT_BALANCE' && transferResult.details) {
-          const { required, available, shortage, token } = transferResult.details;
-          
-          // 친절한 에러 메시지
-          toast.error(
-            <div className="space-y-2">
-              <div className="font-semibold">💰 관리자 지갑 잔액 부족</div>
-              <div className="text-sm space-y-1">
-                <div>• 필요한 수량: <span className="font-mono">{required.toFixed(8)} {token}</span></div>
-                <div>• 현재 보유: <span className="font-mono">{available.toFixed(8)} {token}</span></div>
-                <div>• 부족한 수량: <span className="font-mono text-red-400">{shortage.toFixed(8)} {token}</span></div>
-              </div>
-              <div className="text-xs text-gray-400 mt-2 pt-2 border-t border-gray-700">
-                💡 관리자 지갑 주소: <span className="font-mono">{adminWalletData.address}</span>
-              </div>
-            </div>,
-            { duration: 10000 } // 10초 동안 표시
-          );
-          
-          // 추가 정보 토스트
-          setTimeout(() => {
-            toast.info(
-              `관리자 지갑에 ${shortage.toFixed(2)} ${token} 이상을 충전한 후 다시 승인해주세요.`,
-              { duration: 8000 }
-            );
-          }, 500);
-          
-          return;
-        }
-        throw new Error(transferResult.error || '블록체인 전송에 실패했습니다');
-      }
-
-      const txHash = transferResult.txHash;
-      toast.success('블록체인 전송 완료! 잔액을 업데이트합니다...');
-      
-      // ===========================
-      // 자동 출금 프로세스 시작
-      // ===========================
-      toast.info('🔄 가맹점으로 자동 출금을 시작합니다...');
-      
-      try {
-        // 1. 사용자의 가맹점(store) 정보 조회
-        const { data: userData, error: userError } = await supabase
-          .from('users')
-          .select('parent_user_id')
-          .eq('user_id', request.user_id)
-          .single();
-
-        if (userError || !userData || !userData.parent_user_id) {
-          console.warn('⚠️ 가맹점 정보를 찾을 수 없습니다. 자동 출금을 건너뜁니다.');
-          toast.warning('가맹점 정보가 없어 자동 출금을 건너뛰었습니다.');
-        } else {
-          const storeId = userData.parent_user_id;
-          console.log('🏪 가맹점 ID:', storeId);
-
-          // 2. 가맹점의 지갑 주소 조회
-          const { data: storeWalletData, error: storeWalletError } = await supabase
-            .from('wallets')
-            .select('address, wallet_id')
-            .eq('user_id', storeId)
-            .eq('coin_type', request.coin_type)
-            .single();
-
-          if (storeWalletError || !storeWalletData) {
-            console.warn(`⚠️ 가맹점의 ${request.coin_type} 지갑을 찾을 수 없습니다.`);
-            toast.warning(`가맹점의 ${request.coin_type} 지갑이 없어 자동 출금을 건너뛰었습니다.`);
-          } else {
-            console.log('📍 가맹점 지갑 주소:', storeWalletData.address);
-
-            // 3. 사용자 지갑에서 가맹점 지갑으로 실제 전송 (Biconomy)
-            const backendUrl = `${SUPABASE_CONFIG.backendUrl}/transaction/send`;
-            
-            const autoWithdrawResponse = await fetch(backendUrl, {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${SUPABASE_CONFIG.anonKey}`
-              },
-              body: JSON.stringify({
-                fromUserId: request.user_id,  // 사용자 ID로 지갑 조회
-                toAddress: storeWalletData.address,    // 가맹점 지갑
-                coinType: request.coin_type,
-                amount: request.amount.toString(),
-                gasPayment: {
-                  sponsor: true  // 관리자가 가스비 스폰서
-                }
-              })
-            });
-
-            const autoWithdrawResult = await autoWithdrawResponse.json();
-
-            if (!autoWithdrawResponse.ok || !autoWithdrawResult.success) {
-              console.error('❌ 자동 출금 실패:', autoWithdrawResult);
-              toast.error('자동 출금에 실패했습니다. 수동으로 출금해주세요.');
-            } else {
-              const withdrawTxHash = autoWithdrawResult.txHash;
-              console.log('✅ 자동 출금 성공:', withdrawTxHash);
-
-              // 4. 사용자 지갑 ��액 차감
-              const { error: balanceUpdateError } = await supabase
-                .from('wallets')
-                .update({ balance: 0 })  // 전액 출금
-                .eq('wallet_id', request.wallet_id);
-
-              if (balanceUpdateError) {
-                console.error('❌ 잔액 업데이트 실패:', balanceUpdateError);
-              }
-
-              // 5. withdrawals 테이블에 출금 기록 생성
-              const { error: withdrawError } = await supabase
-                .from('withdrawals')
-                .insert({
-                  user_id: request.user_id,
-                  wallet_id: request.wallet_id,
-                  coin_type: request.coin_type,
-                  amount: request.amount,
-                  tx_hash: withdrawTxHash,
-                  to_address: storeWalletData.address,
-                  status: 'completed',
-                  fee: 0,  // 가스비는 스폰서가 부담
-                  method: 'auto_withdraw',
-                  created_at: new Date().toISOString(),
-                  completed_at: new Date().toISOString()
-                });
-
-              if (withdrawError) {
-                console.error('❌ 출금 기록 저장 실패:', withdrawError);
-              }
-
-              // 6. transactions 테이블에 출금 기록 생성
-              const { error: withdrawTxError } = await supabase
-                .from('transactions')
-                .insert({
-                  user_id: request.user_id,
-                  wallet_id: request.wallet_id,
-                  type: 'withdrawal',
-                  coin_type: request.coin_type,
-                  amount: request.amount,
-                  balance_before: request.amount,  // 입금 후 출금 전 잔액
-                  balance_after: 0,  // 전액 출금
-                  reference_id: request.request_id,
-                  tx_hash: withdrawTxHash,
-                  description: '가맹점 자동 출금',
-                  metadata: {
-                    method: 'auto_withdraw',
-                    store_id: storeId,
-                    store_address: storeWalletData.address,
-                    gas_sponsored: true,
-                    deposit_tx_hash: txHash
-                  },
-                  created_at: new Date().toISOString()
-                });
-
-              if (withdrawTxError) {
-                console.error('❌ 출금 트랜잭션 기록 실패:', withdrawTxError);
-              }
-
-              // 7. 사용자에게 종알림 전송
-              const { error: notificationError } = await supabase
-                .from('notifications')
-                .insert({
-                  user_id: request.user_id,
-                  type: 'transaction',
-                  title: '입금 완료',
-                  message: `${request.amount} ${request.coin_type} 입금이 완료되어 가맹점으로 전송되었습니다.`,
-                  is_read: false,
-                  metadata: {
-                    tx_hash: withdrawTxHash,
-                    amount: request.amount,
-                    coin_type: request.coin_type,
-                    store_address: storeWalletData.address
-                  },
-                  created_at: new Date().toISOString()
-                });
-
-              if (notificationError) {
-                console.error('❌ 알림 전송 실패:', notificationError);
-              }
-
-              toast.success(`✅ 가맹점으로 자동 출금 완료! TX: ${withdrawTxHash.substring(0, 10)}...`);
-            }
-          }
-        }
-      } catch (autoWithdrawError: any) {
-        console.error('❌ 자동 출금 처리 중 오류:', autoWithdrawError);
-        toast.error(`자동 출금 중 오류: ${autoWithdrawError.message}`);
-      }
-      // ===========================
-      // 자동 출금 프로세스 종료
-      // ===========================
-
-      // 5. 요청 상태를 승인으로 변경
-      const { error: requestError } = await supabase
-        .from('transfer_requests')
-        .update({
-          status: 'approved',
-          admin_note: adminNote,
-          approved_by: adminId,
-          approved_at: new Date().toISOString(),
-          tx_hash: txHash
-        })
-        .eq('request_id', request.request_id);
-
-      if (requestError) throw requestError;
-
-      // 6. 지갑 잔액 업데이트
-      const newBalance = parseFloat(userWalletData.balance) + request.amount;
-
-      const { error: updateError } = await supabase
-        .from('wallets')
-        .update({ balance: newBalance })
-        .eq('wallet_id', request.wallet_id);
-
-      if (updateError) throw updateError;
-
-      // 7. deposits 테이블에 입금 기록 생성
-      const { error: depositError } = await supabase
-        .from('deposits')
-        .insert({
+      // 2. 승인 처리
+      const result = await approveTransferRequest({
+        request: {
+          request_id: request.request_id,
           user_id: request.user_id,
           wallet_id: request.wallet_id,
           coin_type: request.coin_type,
-          amount: request.amount,
-          tx_hash: txHash,
-          confirmations: 1,
-          required_confirmations: 1,
-          status: 'confirmed',
-          from_address: adminWalletData.address,
-          method: 'supertransaction',
-          created_at: new Date().toISOString(),
-          confirmed_at: new Date().toISOString()
-        });
+          amount: request.amount
+        },
+        adminNote,
+        adminId: user.id
+      });
 
-      if (depositError) throw depositError;
-
-      // 8. 트랜잭션 기록 생성
-      const { error: txError } = await supabase
-        .from('transactions')
-        .insert({
-          user_id: request.user_id,
-          wallet_id: request.wallet_id,
-          type: 'deposit',
-          coin_type: request.coin_type,
-          amount: request.amount,
-          balance_before: parseFloat(userWalletData.balance),
-          balance_after: newBalance,
-          reference_id: request.request_id,
-          tx_hash: txHash,
-          description: `코인 구매 승인 - ${adminNote}`,
-          metadata: {
-            method: 'supertransaction',
-            gas_sponsored: true,
-            admin_wallet: adminWalletData.address
-          },
-          created_at: new Date().toISOString()
-        });
-
-      if (txError) throw txError;
-
-      toast.success(`✅ 승인 완료! TX: ${txHash.substring(0, 10)}...`);
-      setSelectedRequest(null);
-      setAdminNote('');
-      fetchData();
-
+      if (result.success) {
+        toast.success(`승인되었습니다. 가스비 지원: ${gasSponsorEnabled ? '활성화' : '비활성화'}`);
+        setSelectedRequest(null);
+        setAdminNote('');
+        setGasEstimate(null);
+        setGasSponsorEnabled(true); // 기본값으로 리셋
+        fetchData();
+      } else {
+        toast.error(result.error || '승인 처리에 실패했습니다');
+      }
     } catch (error: any) {
-      console.error('Approve error:', error);
+      console.error('❌ 승인 오류:', error);
       toast.error(error.message || '승인 처리 중 오류가 발생했습니다');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 코인 구매 요청 거부
-  const handleRejectRequest = async (request: TransferRequest) => {
+  // 코인 판매 요청 승인 (Store -> Center)
+  const handleApproveCoinSaleRequest = async (sale: CoinSaleRequest) => {
     if (!adminNote.trim()) {
-      toast.error('거부 사유를 입력해주세요');
+      toast.error('관리자 메모를 입력해주세요');
+      return;
+    }
+
+    if (!user?.id) {
+      toast.error('로그인 정보를 찾을 수 없습니다');
       return;
     }
 
     setIsProcessing(true);
 
     try {
-      const { data: authData } = await supabase.auth.getUser();
-      const adminId = authData.user?.id;
+      const result = await approveCoinSale({
+        sale,
+        adminId: user.id,
+        adminNote
+      });
 
+      if (result.success) {
+        setSelectedCoinSale(null);
+        setAdminNote('');
+        fetchData();
+      } else {
+        toast.error(result.error || '승인 처리에 실패했습니다');
+      }
+    } catch (error: any) {
+      console.error('❌ 승인 오류:', error);
+      toast.error(error.message || '승인 처리 중 오류가 발생했습니다');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 코인 판매 요청 거절
+  const handleRejectCoinSale = async (sale: CoinSaleRequest) => {
+    if (!adminNote.trim()) {
+      toast.error('거절 사유(메모)를 입력해주세요');
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const { error } = await supabase
+        .from('store_coin_sales')
+        .update({
+          status: 'rejected',
+          admin_note: adminNote,
+          approved_by: user?.id,
+          approved_at: new Date().toISOString() // 거절 시각으로 사용
+        })
+        .eq('sale_id', sale.sale_id);
+
+      if (error) throw error;
+
+      toast.success('판매 요청이 거절되었습니다');
+      setSelectedCoinSale(null);
+      setAdminNote('');
+      fetchData();
+    } catch (error: any) {
+      console.error('❌ 거절 오류:', error);
+      toast.error('거절 처리에 실패했습니다');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 센터 운영 모드 확인 및 가스비 추정 (기존 로직 유지)
+  const checkModeAndEstimateGas = async (request: TransferRequest) => {
+    try {
+      if (!user?.id) return;
+      
+      setIsEstimatingGas(true);
+      setGasEstimate(null);
+      
+      // 1. 센터 운영 모드 확인
+      const mode = await getCenterOperationMode(user.id);
+      setOperationMode(mode);
+      console.log('🔧 센터 운영 모드:', mode);
+      
+      // 2. 프로덕션 모드일 때만 가스비 추정
+      if (mode === 'production') {
+        // 코인 정보 조회
+        const { data: coinData } = await supabase
+          .from('supported_tokens')
+          .select('contract_address, decimals, rpc_url, chain_id, network')
+          .eq('symbol', request.coin_type)
+          .single();
+        
+        if (coinData) {
+          // 사용자 지갑 주소 조회
+          const { data: userWalletData } = await supabase
+            .from('wallets')
+            .select('address')
+            .eq('wallet_id', request.wallet_id)
+            .single();
+          
+          if (userWalletData) {
+            // 가스비 추정
+            const estimate = await estimateGas({
+              toAddress: userWalletData.address,
+              tokenAddress: coinData.contract_address,
+              amount: request.amount.toString(),
+              decimals: coinData.decimals || 18,
+              rpcUrl: coinData.rpc_url,
+              chainId: coinData.chain_id
+            });
+            
+            if (estimate) {
+              let gasToken = '';
+              if (coinData.symbol.includes('USDT') || coinData.symbol.includes('ETH')) {
+                gasToken = 'ETH';
+              } else if (coinData.symbol.includes('KRWQ') || coinData.symbol.includes('MATIC')) {
+                gasToken = 'MATIC';
+              } else if (coinData.symbol.includes('TRX')) {
+                gasToken = 'TRX';
+              } else {
+                gasToken = 'ETH';
+              }
+
+              setGasEstimate({
+                estimatedCost: estimate,
+                token: gasToken
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('가스비 추정 오류:', error);
+    } finally {
+      setIsEstimatingGas(false);
+    }
+  };
+
+  // 기존 입출금 거절 로직
+  const handleRejectRequest = async (request: TransferRequest) => {
+    if (!adminNote.trim()) {
+      toast.error('관리자 메모를 입력해주세요');
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
       const { error } = await supabase
         .from('transfer_requests')
         .update({
           status: 'rejected',
           admin_note: adminNote,
-          approved_by: adminId,
           approved_at: new Date().toISOString()
         })
         .eq('request_id', request.request_id);
 
       if (error) throw error;
 
-      toast.success('코인 구매 요청이 거부되었습니다');
+      toast.success('요청이 거절되었습니다');
       setSelectedRequest(null);
       setAdminNote('');
       fetchData();
-
     } catch (error: any) {
-      console.error('Reject error:', error);
-      toast.error(error.message || '거부 처리 중 오류가 발생했습니다');
+      console.error('Error rejecting request:', error);
+      toast.error('요청 거절에 실패했습니다');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Transaction Receipt 조회
-  const handleViewReceipt = async (txHash: string, chainId: number = 8453, depositId?: string) => {
-    setIsLoadingReceipt(true);
-    setShowReceiptModal(true);
-    setCurrentReceipt({ txHash, status: 'pending' });
-
-    try {
-      // 가맹점 계정이 입금 내역의 Receipt를 확인하면 viewed_by_store = true로 업데이트
-      if (user?.role === 'store' && depositId && activeTab === 'deposits') {
-        console.log('✅ 가맹점이 입금 Receipt 확인:', depositId);
-        
-        const { error: updateError } = await supabase
-          .from('deposits')
-          .update({ 
-            viewed_by_store: true,
-            viewed_at: new Date().toISOString()
-          })
-          .eq('deposit_id', depositId);
-
-        if (updateError) {
-          console.error('❌ viewed_by_store 업데이트 실패:', updateError);
-        } else {
-          console.log('✅ viewed_by_store 업데이트 성공');
-        }
-      }
-
-      const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
-      const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
-
-      const response = await fetch(`${backendUrl}/transaction/receipt/${txHash}?chainId=${chainId}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${anonKey}`
-        }
-      });
-
-      const result = await response.json();
-
-      if (result.success && result.receipt) {
-        setCurrentReceipt(result.receipt);
-      } else {
-        toast.error('Receipt 조회 실패');
-      }
-    } catch (error: any) {
-      console.error('Receipt 조회 오류:', error);
-      toast.error('Receipt 조회 중 오류가 발생했습니다');
-    } finally {
-      setIsLoadingReceipt(false);
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed':
+      case 'confirmed':
+      case 'approved':
+        return 'text-green-400 bg-green-400/10 border-green-400/20';
+      case 'pending':
+        return 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20';
+      case 'failed':
+      case 'rejected':
+        return 'text-red-400 bg-red-400/10 border-red-400/20';
+      case 'processing':
+        return 'text-blue-400 bg-blue-400/10 border-blue-400/20';
+      default:
+        return 'text-slate-400 bg-slate-400/10 border-slate-400/20';
     }
   };
 
-  // 필터링
-  const getFilteredData = () => {
+  const filteredData = () => {
     let data: any[] = [];
-
-    // 가맹점 계정: 코인 구매 요청 탭에서도 입금 내역 표시
-    if (user?.role === 'store' && activeTab === "transfer_requests") {
-      data = deposits;  // 입금 내역을 표시
-    } else if (activeTab === "transfer_requests") {
-      data = transferRequests;
-    } else if (activeTab === "deposits") {
-      data = deposits;
-    } else {
-      data = withdrawals;
-    }
+    if (activeTab === 'transfer_requests') data = transferRequests;
+    else if (activeTab === 'deposits') data = deposits;
+    else if (activeTab === 'withdrawals') data = withdrawals;
+    else if (activeTab === 'coin_sales') data = coinSales;
 
     return data.filter(item => {
       const matchesSearch = 
         item.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.coin_type?.toLowerCase().includes(searchTerm.toLowerCase());
+        item.tx_hash?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (item as any).store_name?.toLowerCase().includes(searchTerm.toLowerCase()) || // Coin Sales
+        (item as any).store_email?.toLowerCase().includes(searchTerm.toLowerCase()); // Coin Sales
       
       const matchesStatus = statusFilter === "all" || item.status === statusFilter;
       
@@ -741,598 +639,493 @@ export function DepositWithdrawalManagement() {
     });
   };
 
-  const filteredData = getFilteredData();
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const currentData = filteredData.slice(startIndex, startIndex + itemsPerPage);
+  const currentData = filteredData().slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
-  // 통계 계산
-  const stats = {
-    pending: transferRequests.filter(r => r.status === 'pending').length,
-    approved: transferRequests.filter(r => r.status === 'approved').length,
-    rejected: transferRequests.filter(r => r.status === 'rejected').length,
-    totalDeposits: deposits.length,
-    totalWithdrawals: withdrawals.length
-  };
+  const totalPages = Math.ceil(filteredData().length / itemsPerPage);
 
-  const getStatusBadge = (status: string) => {
-    const styles = {
-      pending: "bg-amber-500/20 text-amber-400 border-amber-500/30",
-      approved: "bg-green-500/20 text-green-400 border-green-500/30",
-      rejected: "bg-red-500/20 text-red-400 border-red-500/30",
-      confirmed: "bg-green-500/20 text-green-400 border-green-500/30",
-      processing: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-      completed: "bg-green-500/20 text-green-400 border-green-500/30",
-      failed: "bg-red-500/20 text-red-400 border-red-500/30"
-    };
-
-    const labels = {
-      pending: "대기중",
-      approved: "승인됨",
-      rejected: "거부됨",
-      confirmed: "확인됨",
-      processing: "처리중",
-      completed: "완료",
-      failed: "실패"
-    };
-
+  const formatCoinAmount = (amount: number, symbol: string) => {
     return (
-      <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs border ${styles[status as keyof typeof styles] || styles.pending}`}>
-        {labels[status as keyof typeof labels] || status}
-      </span>
+      <div className="flex items-center gap-2">
+        {coinIcons[symbol] ? (
+          <img src={coinIcons[symbol]} alt={symbol} className="w-5 h-5 rounded-full" />
+        ) : (
+          <CoinsIcon className="w-5 h-5 text-slate-400" />
+        )}
+        <span className="font-medium text-white">
+          {amount.toLocaleString(undefined, { maximumFractionDigits: 8 })}
+        </span>
+        <span className="text-slate-400 text-sm">{symbol}</span>
+      </div>
     );
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          {user?.role === 'store' ? (
-            <>
-              <h2 className="text-cyan-400 mb-1">거래 내역</h2>
-              <p className="text-slate-400 text-sm">입금 및 출금 내역을 확인합니다</p>
-            </>
-          ) : (
-            <>
-              <h2 className="text-cyan-400 mb-1">구매 요청 관리</h2>
-              <p className="text-slate-400 text-sm">사용자의 코인 구매 요청을 승인하고 입출금 내역을 확인합니다</p>
-            </>
-          )}
+          <h2 className="text-2xl font-bold text-white">입출금 관리</h2>
+          <p className="text-slate-400">사용자 입금, 출금 및 코인 판매 요청을 관리합니다.</p>
         </div>
       </div>
 
-      {/* 통계 카드 */}
-      {user?.role === 'store' ? (
-        // 가맹점 계정: 총 입금, 총 출금 표시
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">총 입금</p>
-              <p className="text-cyan-400 text-2xl">{stats.totalDeposits}</p>
-            </div>
-          </div>
-
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">총 출금</p>
-              <p className="text-purple-400 text-2xl">{stats.totalWithdrawals}</p>
-            </div>
-          </div>
-        </div>
-      ) : (
-        // 다른 계정: 전체 통계 표시
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">대기중 요청</p>
-              <p className="text-amber-400 text-2xl">{stats.pending}</p>
-            </div>
-          </div>
-
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">승인됨</p>
-              <p className="text-green-400 text-2xl">{stats.approved}</p>
-            </div>
-          </div>
-
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-red-500 to-pink-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">거부됨</p>
-              <p className="text-red-400 text-2xl">{stats.rejected}</p>
-            </div>
-          </div>
-
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">총 입금</p>
-              <p className="text-cyan-400 text-2xl">{stats.totalDeposits}</p>
-            </div>
-          </div>
-
-          <div className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg opacity-20 group-hover:opacity-30 blur transition-opacity"></div>
-            <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-lg p-4">
-              <p className="text-slate-400 text-sm mb-1">총 출금</p>
-              <p className="text-purple-400 text-2xl">{stats.totalWithdrawals}</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 탭 */}
-      <div className="flex gap-2 border-b border-slate-700/50">
-        {/* 가맹점 계정: 코인 구매 요청 탭 숨김 */}
+      {/* 탭 네비게이션 */}
+      <div className="flex flex-wrap gap-2 border-b border-slate-700 pb-1">
+        {/* 센터/에이전시만 "코인 구매 요청" 탭 표시 */}
         {user?.role !== 'store' && (
           <button
-            onClick={() => {
-              setActiveTab("transfer_requests");
-              setCurrentPage(1);
-              setStatusFilter("all");
-            }}
-            className={`px-6 py-3 border-b-2 transition-colors ${
-              activeTab === "transfer_requests"
-                ? "border-cyan-500 text-cyan-400"
-                : "border-transparent text-slate-400 hover:text-slate-300"
+            onClick={() => setActiveTab('transfer_requests')}
+            className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+              activeTab === 'transfer_requests'
+                ? 'bg-cyan-500/10 text-cyan-400 border-b-2 border-cyan-500'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
           >
             <div className="flex items-center gap-2">
-              <DollarSign className="w-5 h-5" />
+              <ArrowDownCircle className="w-4 h-4" />
               <span>코인 구매 요청</span>
-              {stats.pending > 0 && (
-                <span className="px-2 py-0.5 bg-amber-500/20 text-amber-400 text-xs rounded-full">
-                  {stats.pending}
+              {transferRequests.filter(r => r.status === 'pending').length > 0 && (
+                <span className="bg-cyan-500 text-white text-xs px-1.5 py-0.5 rounded-full">
+                  {transferRequests.filter(r => r.status === 'pending').length}
                 </span>
               )}
             </div>
           </button>
         )}
-
         <button
-          onClick={() => {
-            setActiveTab("deposits");
-            setCurrentPage(1);
-            setStatusFilter("all");
-          }}
-          className={`px-6 py-3 border-b-2 transition-colors ${
-            activeTab === "deposits"
-              ? "border-cyan-500 text-cyan-400"
-              : "border-transparent text-slate-400 hover:text-slate-300"
+          onClick={() => setActiveTab('deposits')}
+          className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+            activeTab === 'deposits'
+              ? 'bg-cyan-500/10 text-cyan-400 border-b-2 border-cyan-500'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <div className="flex items-center gap-2">
-            <ArrowDownCircle className="w-5 h-5" />
+            <ArrowDownCircle className="w-4 h-4" />
             <span>입금 내역</span>
           </div>
         </button>
-
         <button
-          onClick={() => {
-            setActiveTab("withdrawals");
-            setCurrentPage(1);
-            setStatusFilter("all");
-          }}
-          className={`px-6 py-3 border-b-2 transition-colors ${
-            activeTab === "withdrawals"
-              ? "border-cyan-500 text-cyan-400"
-              : "border-transparent text-slate-400 hover:text-slate-300"
+          onClick={() => setActiveTab('withdrawals')}
+          className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+            activeTab === 'withdrawals'
+              ? 'bg-cyan-500/10 text-cyan-400 border-b-2 border-cyan-500'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <div className="flex items-center gap-2">
-            <ArrowUpCircle className="w-5 h-5" />
+            <ArrowUpCircle className="w-4 h-4" />
             <span>출금 내역</span>
           </div>
         </button>
-      </div>
-
-      {/* 검색 및 필터 */}
-      <div className="flex flex-col md:flex-row gap-4">
-        <div className="flex-1 relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-          <input
-            type="text"
-            placeholder="사용자 이름, 이메일, 코인으로 검색..."
-            value={searchTerm}
-            onChange={(e) => {
-              setSearchTerm(e.target.value);
-              setCurrentPage(1);
-            }}
-            className="w-full pl-12 pr-4 py-3 bg-slate-900/50 border border-cyan-500/30 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 transition-colors"
-          />
-        </div>
-
-        {/* 가맹점 계정: 상태 필터 숨김 */}
+        {/* 센터/에이전시만 "가맹점 판매 요청" 탭 표시 */}
         {user?.role !== 'store' && (
-          <select
-            value={statusFilter}
-            onChange={(e) => {
-              setStatusFilter(e.target.value);
-              setCurrentPage(1);
-            }}
-            className="px-4 py-3 bg-slate-900/50 border border-cyan-500/30 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500/50 transition-colors"
+          <button
+            onClick={() => setActiveTab('coin_sales')}
+            className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+              activeTab === 'coin_sales'
+                ? 'bg-cyan-500/10 text-cyan-400 border-b-2 border-cyan-500'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
           >
-            <option value="all">전체 상태</option>
-            {activeTab === "transfer_requests" && (
-              <>
-                <option value="pending">대기중</option>
-                <option value="approved">승인됨</option>
-                <option value="rejected">거부됨</option>
-              </>
-            )}
-            {activeTab === "deposits" && (
-              <>
-                <option value="pending">대기중</option>
-                <option value="confirmed">확인됨</option>
-                <option value="failed">실패</option>
-              </>
-            )}
-            {activeTab === "withdrawals" && (
-              <>
-                <option value="pending">대기중</option>
-                <option value="processing">처리중</option>
-                <option value="completed">완료</option>
-                <option value="rejected">거부됨</option>
-                <option value="failed">실패</option>
-              </>
-            )}
-          </select>
+            <div className="flex items-center gap-2">
+              <Landmark className="w-4 h-4" />
+              <span>가맹점 판매 요청</span>
+              {coinSales.filter(r => r.status === 'pending').length > 0 && (
+                <span className="bg-cyan-500 text-white text-xs px-1.5 py-0.5 rounded-full">
+                  {coinSales.filter(r => r.status === 'pending').length}
+                </span>
+              )}
+            </div>
+          </button>
         )}
       </div>
 
-      {/* 테이블 */}
-      <div className="relative">
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-xl opacity-20 blur"></div>
-        <div className="relative bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-slate-800/50 border-b border-slate-700/50">
-                <tr>
-                  <th className="px-6 py-4 text-left text-slate-300">사용자</th>
-                  <th className="px-6 py-4 text-left text-slate-300">코인</th>
-                  <th className="px-6 py-4 text-right text-slate-300">수량</th>
-                  <th className="px-6 py-4 text-left text-slate-300">상태</th>
-                  <th className="px-6 py-4 text-left text-slate-300">생성일</th>
-                  <th className="px-6 py-4 text-right text-slate-300">액션</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700/50">
-                {currentData.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
-                      데이터가 없습니다
-                    </td>
-                  </tr>
-                ) : (
-                  currentData.map((item: any) => (
-                    <tr key={item.request_id || item.deposit_id || item.withdrawal_id} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="px-6 py-4">
-                        <div>
-                          <p className="text-slate-200">{item.username || 'Unknown'}</p>
-                          <p className="text-slate-400 text-sm">{item.email || ''}</p>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          {coinIcons[item.coin_type] ? (
-                            <img 
-                              src={coinIcons[item.coin_type]} 
-                              alt={item.coin_type}
-                              className="w-8 h-8 rounded-full object-cover"
-                              onError={(e) => {
-                                // 이미지 로드 실패 시 아이콘으로 대체
-                                e.currentTarget.style.display = 'none';
-                                e.currentTarget.nextElementSibling?.classList.remove('hidden');
-                              }}
-                            />
-                          ) : null}
-                          <div className={`w-8 h-8 rounded-full bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center ${coinIcons[item.coin_type] ? 'hidden' : ''}`}>
-                            <CoinsIcon className="w-4 h-4 text-cyan-400" />
-                          </div>
-                          <span className="text-slate-200">{item.coin_type}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <p className="text-slate-200">{parseFloat(item.amount).toFixed(8)}</p>
-                        {item.fee && item.fee > 0 && (
-                          <p className="text-slate-400 text-sm">수수료: {parseFloat(item.fee).toFixed(8)}</p>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {getStatusBadge(item.status)}
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="text-slate-300 text-sm">
-                          {new Date(item.created_at).toLocaleString('ko-KR')}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center justify-end gap-2">
-                          {activeTab === "transfer_requests" && item.status === "pending" && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  setSelectedRequest(item);
-                                  setAdminNote('');
-                                }}
-                                className="p-2 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/30 transition-all"
-                                title="상세보기"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                          {activeTab === "transfer_requests" && item.status === "approved" && item.tx_hash && (
-                            <button
-                              onClick={() => handleViewReceipt(item.tx_hash)}
-                              className="p-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-400 hover:bg-purple-500/30 transition-all"
-                              title="Receipt 확인"
-                            >
-                              <FileText className="w-4 h-4" />
-                            </button>
-                          )}
-                          {(activeTab === "deposits" || activeTab === "withdrawals") && item.tx_hash && (
-                            <button
-                              onClick={() => handleViewReceipt(item.tx_hash, 8453, item.deposit_id)}
-                              className="p-2 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-400 hover:bg-purple-500/30 transition-all"
-                              title="Receipt 확인"
-                            >
-                              <FileText className="w-4 h-4" />
-                            </button>
-                          )}
-                          {activeTab !== "transfer_requests" && !item.tx_hash && (
-                            <button
-                              className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 transition-all cursor-not-allowed"
-                              title="TX Hash 없음"
-                              disabled
-                            >
-                              <FileText className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* 페이지네이션 */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-700/50 bg-slate-800/30">
-              <div className="text-slate-400 text-sm">
-                {filteredData.length}개 중 {startIndex + 1}-{Math.min(startIndex + itemsPerPage, filteredData.length)}개 표시
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={currentPage === 1}
-                  className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:border-cyan-500/50 hover:text-cyan-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <ChevronLeft className="w-5 h-5" />
-                </button>
-
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
-                    if (
-                      page === 1 ||
-                      page === totalPages ||
-                      (page >= currentPage - 1 && page <= currentPage + 1)
-                    ) {
-                      return (
-                        <button
-                          key={page}
-                          onClick={() => setCurrentPage(page)}
-                          className={`min-w-[40px] h-10 px-3 rounded-lg transition-all ${
-                            currentPage === page
-                              ? 'bg-cyan-500 text-white'
-                              : 'bg-slate-800 border border-slate-700 text-slate-400 hover:border-cyan-500/50 hover:text-cyan-400'
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      );
-                    } else if (page === currentPage - 2 || page === currentPage + 2) {
-                      return <span key={page} className="text-slate-500">...</span>;
-                    }
-                    return null;
-                  })}
-                </div>
-
-                <button
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={currentPage === totalPages}
-                  className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:border-cyan-500/50 hover:text-cyan-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <ChevronRight className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-          )}
+      {/* 필터 및 검색 */}
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            type="text"
+            placeholder={activeTab === 'coin_sales' ? "가맹점명, 이메일 검색..." : "사용자명, 이메일, TX Hash 검색..."}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Filter className="w-4 h-4 text-slate-400" />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg text-white px-4 py-2 focus:outline-none focus:border-cyan-500"
+          >
+            <option value="all">모든 상태</option>
+            <option value="pending">대기중</option>
+            <option value="approved">승인됨</option>
+            <option value="rejected">거절됨</option>
+            <option value="confirmed">확인됨</option>
+            <option value="completed">완료됨</option>
+          </select>
         </div>
       </div>
 
-      {/* 승인/거부 모달 */}
+      {/* 테이블 */}
+      <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-slate-900/50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">
+                  {activeTab === 'coin_sales' ? '요청 일시' : '날짜'}
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">
+                  {activeTab === 'coin_sales' ? '가맹점' : '사용자'}
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">
+                  {activeTab === 'coin_sales' ? '판매 수량' : '수량'}
+                </th>
+                {activeTab === 'coin_sales' && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">
+                    원화 환산
+                  </th>
+                )}
+                <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">상태</th>
+                {(activeTab === 'transfer_requests' || activeTab === 'coin_sales') && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">메모</th>
+                )}
+                {activeTab !== 'transfer_requests' && activeTab !== 'coin_sales' && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">TX Hash</th>
+                )}
+                <th className="px-6 py-3 text-right text-xs font-medium text-slate-400 uppercase tracking-wider">관리</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-700">
+              {currentData.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-12 text-center text-slate-400">
+                    데이터가 없습니다
+                  </td>
+                </tr>
+              ) : (
+                currentData.map((item: any) => (
+                  <tr key={item.id || item.request_id || item.deposit_id || item.withdrawal_id || item.sale_id} className="hover:bg-slate-700/50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
+                      <div className="flex flex-col">
+                        <span>{new Date(item.created_at).toLocaleDateString()}</span>
+                        <span className="text-xs text-slate-500">
+                          {new Date(item.created_at).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-white">
+                          {activeTab === 'coin_sales' ? item.store_name : item.username}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {activeTab === 'coin_sales' ? item.store_email : item.email}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {formatCoinAmount(item.amount, item.coin_type)}
+                    </td>
+                    {activeTab === 'coin_sales' && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
+                        {item.krw_value ? `₩${item.krw_value.toLocaleString()}` : '-'}
+                      </td>
+                    )}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getStatusColor(item.status)}`}>
+                        {item.status === 'pending' ? '대기중' :
+                         item.status === 'approved' ? '승인됨' :
+                         item.status === 'rejected' ? '거절됨' :
+                         item.status === 'confirmed' ? '확인됨' :
+                         item.status === 'completed' ? '완료됨' : item.status}
+                      </span>
+                    </td>
+                    {(activeTab === 'transfer_requests' || activeTab === 'coin_sales') && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300 max-w-xs truncate">
+                        {item.user_note || item.request_note || '-'}
+                      </td>
+                    )}
+                    {activeTab !== 'transfer_requests' && activeTab !== 'coin_sales' && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-cyan-400 font-mono">
+                        {item.tx_hash ? (
+                           <div className="flex items-center gap-1">
+                             <span className="truncate max-w-[100px]">{item.tx_hash}</span>
+                             <button
+                               onClick={() => {
+                                 // TX 상세 조회 (가짜 TX인 경우와 실제 TX인 경우 구분 필요)
+                                 // 현재는 간단히 알림만
+                                 toast.info(`트랜잭션 해시: ${item.tx_hash}`);
+                               }}
+                               className="p-1 hover:bg-slate-700 rounded"
+                             >
+                               <ExternalLink className="w-3 h-3" />
+                             </button>
+                           </div>
+                        ) : '-'}
+                      </td>
+                    )}
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      {item.status === 'pending' && activeTab === 'transfer_requests' && (
+                        <button
+                          onClick={() => {
+                            setSelectedRequest(item);
+                            checkModeAndEstimateGas(item);
+                          }}
+                          className="text-cyan-400 hover:text-cyan-300"
+                        >
+                          처리하기
+                        </button>
+                      )}
+                      {item.status === 'pending' && activeTab === 'coin_sales' && (
+                        <button
+                          onClick={() => setSelectedCoinSale(item)}
+                          className="text-cyan-400 hover:text-cyan-300"
+                        >
+                          처리하기
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* 페이지네이션 */}
+        <div className="px-6 py-4 border-t border-slate-700 flex items-center justify-between">
+          <div className="text-sm text-slate-400">
+            총 {filteredData().length}개 중 {(currentPage - 1) * itemsPerPage + 1}-
+            {Math.min(currentPage * itemsPerPage, filteredData().length)} 표시
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="p-2 rounded-lg border border-slate-700 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-4 h-4 text-slate-400" />
+            </button>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="p-2 rounded-lg border border-slate-700 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 코인 구매 승인 모달 */}
       {selectedRequest && (
-        <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[9999] p-4"
-          onClick={() => {
-            setSelectedRequest(null);
-            setAdminNote('');
-          }}
-        >
-          <div
-            className="relative w-full max-w-lg"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-2xl opacity-30 blur"></div>
-            <div className="relative bg-slate-900 border border-cyan-500/30 rounded-2xl p-6">
-              <h3 className="text-white text-xl mb-6">코인 구매 요청 처리</h3>
-
-              <div className="space-y-4 mb-6">
-                <div className="bg-slate-800/50 rounded-lg p-4 space-y-3">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">사용자</span>
-                    <span className="text-white">{selectedRequest.username}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">이메일</span>
-                    <span className="text-white">{selectedRequest.email}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">코인</span>
-                    <span className="text-cyan-400">{selectedRequest.coin_type}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">수량</span>
-                    <span className="text-white">{parseFloat(selectedRequest.amount.toString()).toFixed(8)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">요청일시</span>
-                    <span className="text-white">{new Date(selectedRequest.created_at).toLocaleString('ko-KR')}</span>
-                  </div>
-                  {selectedRequest.user_note && (
-                    <div>
-                      <span className="text-slate-400 block mb-1">사용자 메모</span>
-                      <p className="text-white bg-slate-900/50 rounded p-2 text-sm">{selectedRequest.user_note}</p>
-                    </div>
-                  )}
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-lg shadow-2xl p-6">
+            <h3 className="text-xl font-bold text-white mb-4">코인 구매 승인 처리</h3>
+            
+            <div className="space-y-4">
+              <div className="bg-slate-800 p-4 rounded-lg space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">신청자</span>
+                  <span className="text-white">{selectedRequest.username}</span>
                 </div>
-
-                <div>
-                  <label className="block text-slate-300 mb-2 text-sm">관리자 메모 *</label>
-                  <textarea
-                    value={adminNote}
-                    onChange={(e) => setAdminNote(e.target.value)}
-                    className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 transition-colors"
-                    placeholder="승인/거부 사유를 입력하세요..."
-                    rows={3}
-                  />
+                <div className="flex justify-between">
+                  <span className="text-slate-400">코인</span>
+                  <span className="text-cyan-400 font-medium">{selectedRequest.coin_type}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">수량</span>
+                  <span className="text-white font-medium">{selectedRequest.amount}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">신청 메모</span>
+                  <span className="text-slate-300">{selectedRequest.user_note || '-'}</span>
                 </div>
               </div>
 
-              <div className="flex gap-3">
-                <button
-                  onClick={() => handleApproveRequest(selectedRequest)}
-                  disabled={isProcessing}
-                  className="flex-1 bg-green-500/20 border border-green-500 text-green-400 py-3 rounded-lg hover:bg-green-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  <CheckCircle className="w-5 h-5" />
-                  <span>승인</span>
-                </button>
+              {/* 가스비 추정 결과 */}
+              {isEstimatingGas ? (
+                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-blue-400 flex items-center gap-2">
+                   <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                   가스비 계산 중...
+                </div>
+              ) : gasEstimate ? (
+                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-sm space-y-1">
+                   <div className="text-green-400 font-medium flex items-center gap-2">
+                     <CheckCircle className="w-4 h-4" />
+                     전송 가능 (예상 가스비: {gasEstimate.estimatedCost} {gasEstimate.token})
+                   </div>
+                   <div className="text-slate-400 text-xs">
+                     운영 모드: {operationMode === 'production' ? '프로덕션 (실제 전송)' : '개발 (가짜 전송)'}
+                   </div>
+                </div>
+              ) : (
+                <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-400">
+                  가스비 정보를 불러올 수 없습니다.
+                </div>
+              )}
 
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">
+                  관리자 메모 (승인/거절 사유)
+                </label>
+                <textarea
+                  value={adminNote}
+                  onChange={(e) => setAdminNote(e.target.value)}
+                  className="w-full h-24 bg-slate-800 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="메모를 입력하세요..."
+                />
+              </div>
+
+              {/* 가스비 지원 설정 */}
+              <div className="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <h4 className="text-sm font-medium text-white mb-1">가스비 지원 (자동 출금)</h4>
+                    <p className="text-xs text-slate-400">
+                      활성화 시 해당 사용자는 자동 출금이 가능합니다. 비활성화 시 출금이 제한됩니다.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGasSponsorEnabled(!gasSponsorEnabled)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                      gasSponsorEnabled ? 'bg-cyan-500' : 'bg-slate-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        gasSponsorEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="mt-2 text-xs">
+                  <span className={`font-medium ${gasSponsorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                    {gasSponsorEnabled ? '✓ 활성화됨 (자동 출금 가능)' : '✗ 비활성화됨 (자동 출금 불가)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
                 <button
                   onClick={() => handleRejectRequest(selectedRequest)}
                   disabled={isProcessing}
-                  className="flex-1 bg-red-500/20 border border-red-500 text-red-400 py-3 rounded-lg hover:bg-red-500/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg font-medium transition-colors"
                 >
-                  <XCircle className="w-5 h-5" />
-                  <span>거부</span>
+                  거절
                 </button>
-
                 <button
-                  onClick={() => {
-                    setSelectedRequest(null);
-                    setAdminNote('');
-                  }}
+                  onClick={() => handleApproveRequest(selectedRequest)}
                   disabled={isProcessing}
-                  className="px-6 py-3 bg-slate-800 border border-slate-700 text-slate-400 rounded-lg hover:border-cyan-500/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  취소
+                  {isProcessing ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                      처리중...
+                    </>
+                  ) : (
+                    '승인'
+                  )}
                 </button>
               </div>
+              <button
+                onClick={() => setSelectedRequest(null)}
+                className="w-full py-2 text-slate-400 hover:text-white transition-colors"
+              >
+                닫기
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Transaction Receipt 모달 */}
-      {showReceiptModal && currentReceipt && (
-        <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[9999] p-4"
-          onClick={() => {
-            setShowReceiptModal(false);
-            setCurrentReceipt(null);
-          }}
-        >
-          <div
-            className="relative w-full max-w-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-2xl opacity-30 blur"></div>
-            <div className="relative bg-slate-900 border border-cyan-500/30 rounded-2xl p-6">
-              <h3 className="text-white text-xl mb-6">트랜잭션 영수증</h3>
-
-              <div className="space-y-4 mb-6">
-                <div className="bg-slate-800/50 rounded-lg p-4 space-y-3">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">트랜잭션 해시</span>
-                    <span className="text-white">
-                      <a href={`https://explorer.binance.org/tx/${currentReceipt.txHash}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1">
-                        {currentReceipt.txHash.substring(0, 10)}...
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">상태</span>
-                    <span className="text-white">
-                      {currentReceipt.status === 'pending' && <span className="bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full">대기중</span>}
-                      {currentReceipt.status === 'processing' && <span className="bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">처리중</span>}
-                      {currentReceipt.status === 'completed' && <span className="bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">완료</span>}
-                      {currentReceipt.status === 'failed' && <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">실패</span>}
-                    </span>
-                  </div>
-                  {currentReceipt.blockNumber && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">블록 번호</span>
-                      <span className="text-white">{currentReceipt.blockNumber}</span>
-                    </div>
-                  )}
-                  {currentReceipt.gasUsed && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">사용된 가스</span>
-                      <span className="text-white">{currentReceipt.gasUsed}</span>
-                    </div>
-                  )}
-                  {currentReceipt.effectiveGasPrice && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">효과적인 가스 가격</span>
-                      <span className="text-white">{currentReceipt.effectiveGasPrice}</span>
-                    </div>
-                  )}
-                  {currentReceipt.timestamp && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">타임스탬프</span>
-                      <span className="text-white">{new Date(currentReceipt.timestamp).toLocaleString('ko-KR')}</span>
-                    </div>
-                  )}
-                  {currentReceipt.confirmations && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">확인 수</span>
-                      <span className="text-white">{currentReceipt.confirmations}</span>
-                    </div>
-                  )}
+      {/* 코인 판매 승인 모달 */}
+      {selectedCoinSale && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-lg shadow-2xl p-6">
+            <h3 className="text-xl font-bold text-white mb-4">가맹점 판매 요청 승인</h3>
+            
+            <div className="space-y-4">
+              <div className="bg-slate-800 p-4 rounded-lg space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">가맹점</span>
+                  <span className="text-white">{selectedCoinSale.store_name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">코인</span>
+                  <span className="text-cyan-400 font-medium">{selectedCoinSale.coin_type}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">수량</span>
+                  <span className="text-white font-medium">{selectedCoinSale.amount}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">원화 환산</span>
+                  <span className="text-white font-medium">
+                     {selectedCoinSale.krw_value ? `₩${selectedCoinSale.krw_value.toLocaleString()}` : '-'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">신청 메모</span>
+                  <span className="text-slate-300">{selectedCoinSale.request_note || '-'}</span>
                 </div>
               </div>
 
-              <div className="flex gap-3">
+              <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-400">
+                <p className="font-semibold mb-1">⚠️ 주의사항</p>
+                <p>승인 시 가맹점 지갑에서 코인이 차감되고, 센터 지갑으로 이동됩니다. 해당 금액을 가맹점에게 정산해주셨는지 확인하세요.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-2">
+                  관리자 메모 (필수)
+                </label>
+                <textarea
+                  value={adminNote}
+                  onChange={(e) => setAdminNote(e.target.value)}
+                  className="w-full h-24 bg-slate-800 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="정산 관련 메모를 입력하세요..."
+                />
+              </div>
+
+              <div className="flex gap-3 mt-6">
                 <button
-                  onClick={() => {
-                    setShowReceiptModal(false);
-                    setCurrentReceipt(null);
-                  }}
-                  className="px-6 py-3 bg-slate-800 border border-slate-700 text-slate-400 rounded-lg hover:border-cyan-500/50 transition-all"
+                  onClick={() => handleRejectCoinSale(selectedCoinSale)}
+                  disabled={isProcessing}
+                  className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg font-medium transition-colors"
                 >
-                  닫기
+                  거절
+                </button>
+                <button
+                  onClick={() => handleApproveCoinSaleRequest(selectedCoinSale)}
+                  disabled={isProcessing}
+                  className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                      처리중...
+                    </>
+                  ) : (
+                    '승인 및 정산'
+                  )}
                 </button>
               </div>
+              <button
+                onClick={() => setSelectedCoinSale(null)}
+                className="w-full py-2 text-slate-400 hover:text-white transition-colors"
+              >
+                닫기
+              </button>
             </div>
           </div>
         </div>

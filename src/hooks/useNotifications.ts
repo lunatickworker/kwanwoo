@@ -16,34 +16,47 @@ export function useNotifications(userId: string | undefined, isAdmin: boolean = 
 
   // Supabase에서 알림 불러오기
   useEffect(() => {
-    if (!userId) return;
+    if (!userId) {
+      console.log('🔔 useNotifications - userId is null');
+      return;
+    }
     
+    console.log('🔔 useNotifications - Fetching notifications for userId:', userId);
+
     const fetchNotifications = async () => {
-      const { data, error } = await supabase
-        .from('notifications')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      try {
+        const { data, error } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(100);
 
-      if (error) {
-        console.error('Failed to fetch notifications:', error);
-        return;
-      }
+        if (error) {
+          console.error('❌ Failed to fetch notifications:', error);
+          return;
+        }
 
-      if (data) {
-        // DB 형식을 Notification 타입으로 변환
-        const formattedNotifications: Notification[] = data.map(n => ({
-          id: n.notification_id,
-          user_id: n.user_id,
-          type: n.type as Notification['type'],
-          title: n.title,
-          message: n.message,
-          read: n.is_read,
-          created_at: n.created_at,
-          data: n.data,
-        }));
-        setNotifications(formattedNotifications);
+        if (data) {
+          console.log('✅ Fetched notifications:', data.length, 'items');
+          // DB 형식을 Notification 타입으로 변환
+          const formattedNotifications: Notification[] = data.map(n => ({
+            id: n.notification_id,
+            user_id: n.user_id,
+            type: n.type as Notification['type'],
+            title: n.title,
+            message: n.message,
+            read: n.is_read,
+            created_at: n.created_at,
+            data: n.data,
+          }));
+          setNotifications(formattedNotifications);
+          console.log('✅ Notifications set:', formattedNotifications.length);
+        } else {
+          console.log('ℹ️ No notification data');
+        }
+      } catch (err) {
+        console.error('❌ Exception fetching notifications:', err);
       }
     };
 
@@ -79,7 +92,7 @@ export function useNotifications(userId: string | undefined, isAdmin: boolean = 
       .subscribe();
 
     return () => {
-      supabase.removeChannel(notificationChannel);
+      notificationChannel.unsubscribe();
     };
   }, [userId]);
 
@@ -137,7 +150,7 @@ export function useNotifications(userId: string | undefined, isAdmin: boolean = 
     channels.push(verificationChannel);
 
     return () => {
-      channels.forEach(channel => supabase.removeChannel(channel));
+      channels.forEach(channel => channel.unsubscribe());
     };
   }, [userId, isAdmin]);
 

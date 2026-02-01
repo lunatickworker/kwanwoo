@@ -40,6 +40,7 @@ export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
     { id: "dashboard", label: "대시보드", icon: LayoutDashboard },
     { id: "users-wallets", label: "소속 회원", icon: Users },
     { id: "deposit-withdrawal", label: "거래 내역", icon: TrendingUp },
+    { id: "settlement", label: "정산 관리", icon: DollarSign },
   ];
 
   // Agency Admin 메뉴 (에이전시 관리자)
@@ -74,7 +75,8 @@ export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
               window.location.reload();
             } else {
               // 에이전시/센터/가맹점: 대시보드로
-              setActiveTab('dashboard');
+              window.location.hash = '#admin/dashboard';
+              setActiveTab('admin/dashboard');
             }
           }}
           className="flex items-center gap-3 mb-8 group w-full hover:scale-105 transition-transform"
@@ -94,12 +96,17 @@ export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
         <nav className="space-y-2">
           {menuItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            // activeTab이 admin/dashboard 형식일 수 있으므로 id 부분만 비교
+            const isActive = activeTab === item.id || activeTab.endsWith(`/${item.id}`);
             
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  // Hash 기반 네비게이션으로 변경
+                  window.location.hash = `#admin/${item.id}`;
+                  setActiveTab(`admin/${item.id}`);
+                }}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${
                   isActive
                     ? "bg-cyan-500/20 border border-cyan-500/50 shadow-lg shadow-cyan-500/20 text-cyan-400"

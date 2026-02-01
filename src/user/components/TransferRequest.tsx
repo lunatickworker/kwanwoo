@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 
 interface TransferRequestProps {
   wallets: WalletData[];
-  selectedCoin: CoinType;
+  selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
   onSelectCoin: (coin: CoinType) => void;
 }

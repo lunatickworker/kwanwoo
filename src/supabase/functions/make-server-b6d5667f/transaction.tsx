@@ -682,7 +682,7 @@ async function sendTronTransaction({
 }): Promise<{ txHash: string }> {
   try {
     // TronWeb은 npm 패키지이므로 동적 import 사용
-    const TronWeb = (await import('npm:tronweb@6.0.0')).default;
+    const { TronWeb } = await import('npm:tronweb@6.0.0');
     
     const tronWeb = new TronWeb({
       fullHost: rpcUrl,
@@ -723,7 +723,7 @@ async function getTronTransactionReceipt(
 ): Promise<TransactionReceipt> {
   try {
     // TronWeb은 npm 패키지이므로 동적 import 사용
-    const TronWeb = (await import('npm:tronweb@6.0.0')).default;
+    const { TronWeb } = await import('npm:tronweb@6.0.0');
     
     const tronWeb = new TronWeb({
       fullHost: rpcUrl

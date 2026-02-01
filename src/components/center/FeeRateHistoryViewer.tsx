@@ -11,6 +11,7 @@ interface FeeRateHistoryItem {
   new_rate: number;
   changed_at: string;
   changed_by: string;
+  changed_by_name?: string; // 변경자 닉네임/아이디
 }
 
 export function FeeRateHistoryViewer() {
@@ -49,6 +50,7 @@ export function FeeRateHistoryViewer() {
 
       // 각 가맹점의 수수료율 변경 이력 수집
       const allHistory: FeeRateHistoryItem[] = [];
+      const changedByIds = new Set<string>(); // 중복 제거를 위한 Set
 
       storesData?.forEach(store => {
         const feeRateHistory = store.metadata?.fee_rate_history || [];
@@ -62,8 +64,35 @@ export function FeeRateHistoryViewer() {
             changed_at: history.changed_at,
             changed_by: history.changed_by
           });
+          
+          // 변경자 ID 수집
+          if (history.changed_by) {
+            changedByIds.add(history.changed_by);
+          }
         });
       });
+
+      // 변경자 정보 일괄 조회
+      if (changedByIds.size > 0) {
+        const { data: usersData, error: usersError } = await supabase
+          .from('users')
+          .select('user_id, username, center_name, role')
+          .in('user_id', Array.from(changedByIds));
+
+        if (!usersError && usersData) {
+          // 변경자 ID -> 이름 매핑 생성
+          const userMap = new Map<string, string>();
+          usersData.forEach(u => {
+            const displayName = u.center_name || u.username || u.user_id.slice(0, 8);
+            userMap.set(u.user_id, displayName);
+          });
+
+          // 각 히스토리 항목에 변경자 이름 추가
+          allHistory.forEach(item => {
+            item.changed_by_name = userMap.get(item.changed_by) || item.changed_by.slice(0, 8);
+          });
+        }
+      }
 
       // 시간순 정렬 (최신순)
       allHistory.sort((a, b) => 
@@ -194,7 +223,7 @@ export function FeeRateHistoryViewer() {
                 </div>
 
                 <span className="text-xs text-slate-500">
-                  변경자: {item.changed_by}
+                  변경자: {item.changed_by_name || item.changed_by}
                 </span>
               </div>
             </div>

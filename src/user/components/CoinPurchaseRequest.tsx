@@ -1,13 +1,20 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Plus, X, Send, Info, Clock, CheckCircle, XCircle, Ban } from 'lucide-react';
+import { ArrowLeft, Plus, X, Send, Info, Clock, CheckCircle, XCircle, Ban, Bell } from 'lucide-react';
 import { Screen, CoinType, WalletData } from '../App';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 
+interface CoinInfo {
+  symbol: string;
+  name: string;
+  price_krw: number;
+  icon_url?: string;
+}
+
 interface CoinPurchaseRequestProps {
   wallets: WalletData[];
-  selectedCoin: CoinType;
+  selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
   onSelectCoin: (coin: CoinType) => void;
 }
@@ -19,8 +26,6 @@ const QUICK_AMOUNTS = [
   { value: 100000, label: '10만' },
   { value: 1000000, label: '100만' },
   { value: 3000000, label: '300만' },
-  { value: 5000000, label: '500만' },
-  { value: 10000000, label: '1000만' },
 ];
 
 export function CoinPurchaseRequest({ 
@@ -30,13 +35,51 @@ export function CoinPurchaseRequest({
   onSelectCoin 
 }: CoinPurchaseRequestProps) {
   const { user } = useAuth();
-  const [amount, setAmount] = useState(0);
+  const [amount, setAmount] = useState(0); // 한화 금액
   const [memo, setMemo] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [accountVerified, setAccountVerified] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [myRequests, setMyRequests] = useState<any[]>([]);
   const [loadingRequests, setLoadingRequests] = useState(true);
+  const [coinsInfo, setCoinsInfo] = useState<Map<string, CoinInfo>>(new Map());
+  const [isEditing, setIsEditing] = useState(false); // 입력 모드 상태
+
+  // 코인 정보 로드
+  useEffect(() => {
+    loadCoinsInfo();
+  }, []);
+
+  const loadCoinsInfo = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('supported_tokens')
+        .select('symbol, name, price_krw, icon_url')
+        .eq('is_active', true);
+
+      if (error) throw error;
+
+      const infoMap = new Map<string, CoinInfo>();
+      data?.forEach(coin => {
+        infoMap.set(coin.symbol, {
+          symbol: coin.symbol,
+          name: coin.name,
+          price_krw: coin.price_krw || 0,
+          icon_url: coin.icon_url
+        });
+      });
+      setCoinsInfo(infoMap);
+    } catch (error) {
+      console.error('Load coins info error:', error);
+    }
+  };
+
+  // 선택된 코인의 수량 계산
+  const getCoinAmount = () => {
+    const coinInfo = coinsInfo.get(selectedCoin);
+    if (!coinInfo || coinInfo.price_krw === 0 || amount === 0) return 0;
+    return amount / coinInfo.price_krw;
+  };
 
   // 페이지 진입 시 계좌 인증 상태 확인 및 내 요청 목록 로드
   useEffect(() => {
@@ -152,8 +195,21 @@ export function CoinPurchaseRequest({
     setAmount(0);
   };
 
+  // 직접 입력
+  const handleInputChange = (value: string) => {
+    // 숫자만 추출
+    const numericValue = value.replace(/[^0-9]/g, '');
+    const numValue = numericValue === '' ? 0 : parseInt(numericValue);
+    setAmount(numValue);
+  };
+
   // 요청 제출
   const handleSubmit = async () => {
+    if (!selectedCoin) {
+      toast.error('코인을 선택해주세요');
+      return;
+    }
+
     if (!amount || amount <= 0) {
       toast.error('유효한 금액을 입력해주세요');
       return;
@@ -196,13 +252,16 @@ export function CoinPurchaseRequest({
       }
 
       // 3. transfer_requests 테이블에 코인 구매 요청 생성
+      const coinAmount = getCoinAmount(); // 코인 수량 계산
+      
       const { error } = await supabase
         .from('transfer_requests')
         .insert({
           user_id: user?.id,
           wallet_id: walletData.wallet_id,
           coin_type: selectedCoin,
-          amount: amount,
+          amount: coinAmount, // 코인 수량 저장
+          krw_value: amount, // 원화 금액 저장
           request_type: 'purchase',
           status: 'pending',
           memo: memo || null,
@@ -229,17 +288,22 @@ export function CoinPurchaseRequest({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <button
-          onClick={() => onNavigate('home')}
-          className="lg:hidden w-10 h-10 rounded-full bg-slate-800/50 border border-cyan-500/30 flex items-center justify-center hover:bg-cyan-500/10 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5 text-cyan-400" />
-        </button>
-        <div>
-          <h1 className="text-white text-xl lg:text-2xl">코인 구매 요청</h1>
-          <p className="text-slate-400 text-sm">관리자 승인 후 지갑에 입금됩니다</p>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => onNavigate('home')}
+            className="lg:hidden w-10 h-10 rounded-full bg-slate-800/50 border border-cyan-500/30 flex items-center justify-center hover:bg-cyan-500/10 transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5 text-cyan-400" />
+          </button>
+          <div>
+            <h1 className="text-white text-xl lg:text-2xl">코인 구매 요청</h1>
+            <p className="text-slate-400 text-sm">관리자 승인 후 지갑에 입금됩니다</p>
+          </div>
         </div>
+        <button className="w-10 h-10 rounded-full bg-slate-800/50 border border-cyan-500/30 flex items-center justify-center hover:bg-cyan-500/10 transition-colors">
+          <Bell className="w-5 h-5 text-cyan-400" />
+        </button>
       </div>
 
       {/* 로딩 중 */}
@@ -280,30 +344,57 @@ export function CoinPurchaseRequest({
           {/* 코인 선택 */}
           <div>
             <label className="block text-slate-300 mb-3">코인 선택</label>
-            {wallets.length === 0 ? (
+            {wallets.filter(w => w.address !== '').length === 0 ? (
               <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl p-8 text-center">
                 <p className="text-slate-400 mb-2">보유한 지갑이 없습니다</p>
                 <p className="text-slate-500 text-sm">관리자에게 지갑 생성을 요청해주세요</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                {wallets.map((wallet) => (
-                  <button
-                    key={wallet.wallet_id}
-                    onClick={() => onSelectCoin(wallet.coin_type)}
-                    className={`p-5 rounded-2xl border-2 transition-all ${
-                      selectedCoin === wallet.coin_type
-                        ? 'bg-cyan-500/20 border-cyan-500'
-                        : 'bg-slate-800/30 border-slate-700/50 hover:border-cyan-500/30'
-                    }`}
-                  >
-                    <p className={`text-center text-lg ${
-                      selectedCoin === wallet.coin_type ? 'text-cyan-400' : 'text-slate-300'
-                    }`}>
-                      {wallet.coin_type}
-                    </p>
-                  </button>
-                ))}
+              <div className="grid grid-cols-1 gap-3">
+                {wallets.filter(w => w.address !== '').map((wallet) => {
+                  const coinInfo = coinsInfo.get(wallet.coin_type);
+                  return (
+                    <button
+                      key={wallet.wallet_id}
+                      onClick={() => onSelectCoin(wallet.coin_type)}
+                      className={`p-4 rounded-2xl border-2 transition-all text-left ${
+                        selectedCoin === wallet.coin_type
+                          ? 'bg-cyan-500/20 border-cyan-500'
+                          : 'bg-slate-800/30 border-slate-700/50 hover:border-cyan-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        {coinInfo?.icon_url && (
+                          <img 
+                            src={coinInfo.icon_url} 
+                            alt={wallet.coin_type} 
+                            className="w-10 h-10 rounded-full"
+                          />
+                        )}
+                        <div className="flex-1">
+                          <div className={`text-lg font-semibold ${
+                            selectedCoin === wallet.coin_type ? 'text-cyan-400' : 'text-slate-200'
+                          }`}>
+                            {wallet.coin_type}
+                          </div>
+                          <div className="text-sm text-slate-400">
+                            {coinInfo?.name || wallet.coin_type}
+                          </div>
+                        </div>
+                        {coinInfo?.price_krw && (
+                          <div className="text-right">
+                            <div className="text-sm text-slate-400">현재가</div>
+                            <div className={`text-sm font-semibold ${
+                              selectedCoin === wallet.coin_type ? 'text-cyan-400' : 'text-slate-200'
+                            }`}>
+                              ₩{coinInfo.price_krw.toLocaleString()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -312,15 +403,41 @@ export function CoinPurchaseRequest({
           {wallets.length > 0 && selectedCoin && (
             <>
               {/* 요청 금액 - 대형 디스플레이 */}
-              <div className="relative">
+              <div 
+                className="relative cursor-pointer"
+                onClick={() => setIsEditing(true)}
+              >
                 <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500/30 to-purple-500/30 rounded-3xl blur"></div>
                 <div className="relative bg-slate-800/90 border-2 border-cyan-500/50 rounded-3xl p-8">
                   <div className="text-center">
                     <p className="text-slate-400 text-sm mb-2">요청 금액</p>
-                    <div className="text-white text-5xl mb-2 tracking-tight">
-                      {amount.toLocaleString()}
-                    </div>
-                    <p className="text-cyan-400 text-xl">{selectedCoin}</p>
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={amount === 0 ? '' : amount.toString()}
+                        onChange={(e) => handleInputChange(e.target.value)}
+                        onBlur={() => setIsEditing(false)}
+                        autoFocus
+                        placeholder="0"
+                        className="w-full text-center bg-transparent text-white text-5xl mb-2 tracking-tight focus:outline-none"
+                      />
+                    ) : (
+                      <div className="text-white text-5xl mb-2 tracking-tight">
+                        ₩{amount.toLocaleString()}
+                      </div>
+                    )}
+                    {amount > 0 && getCoinAmount() > 0 && (
+                      <div className="mt-4 pt-4 border-t border-slate-700">
+                        <p className="text-slate-400 text-sm mb-1">예상 코인 수량</p>
+                        <div className="text-cyan-400 text-2xl">
+                          {getCoinAmount().toLocaleString(undefined, { 
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 8 
+                          })} {selectedCoin}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -468,13 +585,23 @@ export function CoinPurchaseRequest({
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 mb-2">
                                 <span className="text-white text-lg">
-                                  {request.amount.toLocaleString()} {request.coin_type}
+                                  {parseFloat(request.amount).toLocaleString(undefined, {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 8
+                                  })} {request.coin_type}
                                 </span>
                                 <span className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs ${statusBg} ${statusColor}`}>
                                   {statusIcon}
                                   {statusText}
                                 </span>
                               </div>
+                              
+                              {/* 원화 금액 표시 */}
+                              {request.krw_value && (
+                                <p className="text-cyan-400 text-sm mb-2">
+                                  ₩{parseFloat(request.krw_value).toLocaleString()}원
+                                </p>
+                              )}
                               
                               {request.memo && (
                                 <p className="text-slate-400 text-sm mb-2">메모: {request.memo}</p>

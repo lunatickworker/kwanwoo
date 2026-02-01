@@ -38,14 +38,129 @@ export function SettlementManagement() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "deposit" | "profit" | "fee">("deposit");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [isRealTimeUpdate, setIsRealTimeUpdate] = useState(false);
 
+  // 초기 로드 (화면 로딩 시에만)
   useEffect(() => {
     fetchSettlementData();
+  }, []);
+
+  // 날짜 변경 시 (로딩 없이 부드럽게 업데이트)
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        console.log('[Master] 날짜 변경:', selectedDate);
+        const centersWithHierarchy = await getAllCentersWithHierarchy();
+        if (centersWithHierarchy.length === 0) {
+          setSettlements([]);
+          return;
+        }
+        const dateObj = new Date(selectedDate);
+        const { start, end } = getDateRange(dateObj);
+        const centerStats = await getBatchSettlementStats(centersWithHierarchy, start, end);
+        
+        const settlementData: CenterSettlement[] = centersWithHierarchy.map(center => {
+          const stats = centerStats.get(center.center_id) || {
+            total_deposit: 0,
+            total_withdrawal: 0,
+            transaction_count: 0
+          };
+          const feeRate = center.fee_rate / 100;
+          const totalFee = stats.total_deposit * feeRate;
+          const netProfit = stats.total_deposit - totalFee;
+          return {
+            center_id: center.center_id,
+            center_name: center.center_name,
+            total_deposit: stats.total_deposit,
+            total_withdrawal: stats.total_withdrawal,
+            fee_rate: feeRate,
+            total_fee: totalFee,
+            net_profit: netProfit,
+            transaction_count: stats.transaction_count,
+            last_settlement_date: selectedDate
+          };
+        });
+        setSettlements(settlementData);
+        setLastUpdated(new Date());
+      } catch (error) {
+        console.error('[Master] 날짜 변경 시 데이터 조회 실패:', error);
+      }
+    };
+    loadData();
   }, [selectedDate]);
 
-  const fetchSettlementData = async () => {
+  // 실시간 업데이트 구독
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // 오늘 날짜가 선택된 경우에만 실시간 구독 활성화
+    if (selectedDate !== today) {
+      return;
+    }
+
+    // deposits 테이블의 변경사항 구독
+    const depositsChannel = supabase
+      .channel('settlement-deposits-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'deposits'
+        },
+        (payload) => {
+          console.log('입금 변경 감지:', payload);
+          setIsRealTimeUpdate(true);
+          
+          // 500ms 후 데이터 새로고침 (너무 자주 호출되는 것 방지)
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    // withdrawals 테이블의 변경사항 구독
+    const withdrawalsChannel = supabase
+      .channel('settlement-withdrawals-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'withdrawals'
+        },
+        (payload) => {
+          console.log('출금 변경 감지:', payload);
+          setIsRealTimeUpdate(true);
+          
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    // 30초마다 자동 새로고침
+    const autoRefreshInterval = setInterval(() => {
+      fetchSettlementData(true);
+    }, 30000);
+
+    return () => {
+      depositsChannel.unsubscribe();
+      withdrawalsChannel.unsubscribe();
+      clearInterval(autoRefreshInterval);
+    };
+  }, [selectedDate]);
+
+  const fetchSettlementData = async (isAutoRefresh = false) => {
     try {
-      setLoading(true);
+      if (!isAutoRefresh) {
+        setLoading(true);
+      }
       
       // 1. 모든 센터와 계층 구조를 한 번에 조회 (최적화)
       const centersWithHierarchy = await getAllCentersWithHierarchy();
@@ -90,12 +205,17 @@ export function SettlementManagement() {
 
       setSettlements(settlementData);
       setLoading(false);
+      setLastUpdated(new Date());
 
       // 4. 7일 차트 데이터는 비동기로 로드 (사용자 경험 개선)
-      fetchDailySummaries(centersWithHierarchy);
+      if (!isAutoRefresh) {
+        fetchDailySummaries(centersWithHierarchy);
+      }
     } catch (error) {
       console.error('정산 데이터 조회 실패:', error);
-      toast.error('정산 데이터를 불러오는데 실패했습니다');
+      if (!isAutoRefresh) {
+        toast.error('정산 데이터를 불러오는데 실패했습니다');
+      }
       setLoading(false);
       setChartLoading(false);
     }
@@ -210,9 +330,27 @@ export function SettlementManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-cyan-400 mb-2">정산 관리</h2>
-          <p className="text-slate-400 text-sm">센터별 수수료 및 순수익 관리</p>
+          <div className="flex items-center gap-3">
+            <p className="text-slate-400 text-sm">센터별 수수료 및 순수익 관리</p>
+            {selectedDate === new Date().toISOString().split('T')[0] && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/30 rounded-full">
+                <div className={`w-2 h-2 rounded-full bg-green-400 ${isRealTimeUpdate ? 'animate-ping' : 'animate-pulse'}`}></div>
+                <span className="text-green-400 text-xs">실시간 업데이트</span>
+              </div>
+            )}
+          </div>
+          <p className="text-slate-500 text-xs mt-1">
+            마지막 업데이트: {lastUpdated.toLocaleTimeString('ko-KR')}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => fetchSettlementData()}
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-colors"
+            title="새로고침"
+          >
+            <History className="w-4 h-4" /> 새로고침
+          </button>
           <input
             type="date"
             value={selectedDate}
@@ -226,22 +364,37 @@ export function SettlementManagement() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="relative p-6 bg-slate-900/80 border border-cyan-500/20 rounded-xl">
+        <div className={`relative p-6 bg-slate-900/80 border border-cyan-500/20 rounded-xl transition-all duration-300 ${isRealTimeUpdate ? 'ring-2 ring-cyan-400 scale-[1.02]' : ''}`}>
           <p className="text-slate-400 text-sm mb-1">총 입금액</p>
           <p className="text-white text-2xl mb-2">{formatCurrency(totalStats.total_deposit)}</p>
           <p className="text-slate-500 text-xs">거래 {totalStats.transaction_count}건</p>
+          {isRealTimeUpdate && (
+            <div className="absolute top-2 right-2">
+              <div className="w-2 h-2 bg-cyan-400 rounded-full animate-ping"></div>
+            </div>
+          )}
         </div>
-        <div className="relative p-6 bg-slate-900/80 border border-amber-500/20 rounded-xl">
+        <div className={`relative p-6 bg-slate-900/80 border border-amber-500/20 rounded-xl transition-all duration-300 ${isRealTimeUpdate ? 'ring-2 ring-amber-400 scale-[1.02]' : ''}`}>
           <p className="text-slate-400 text-sm mb-1">총 수수료</p>
           <p className="text-amber-400 text-2xl mb-2">{formatCurrency(totalStats.total_fee)}</p>
           <p className="text-slate-500 text-xs">센터별 요율 적용</p>
+          {isRealTimeUpdate && (
+            <div className="absolute top-2 right-2">
+              <div className="w-2 h-2 bg-amber-400 rounded-full animate-ping"></div>
+            </div>
+          )}
         </div>
-        <div className="relative p-6 bg-slate-900/80 border-2 border-cyan-500/50 rounded-xl">
+        <div className={`relative p-6 bg-slate-900/80 border-2 border-cyan-500/50 rounded-xl transition-all duration-300 ${isRealTimeUpdate ? 'ring-2 ring-cyan-400 scale-[1.02]' : ''}`}>
           <p className="text-slate-400 text-sm mb-1">순수익</p>
           <p className="text-cyan-400 text-2xl mb-2">{formatCurrency(totalStats.net_profit)}</p>
           <p className="text-cyan-500 text-xs">수수료 제외</p>
+          {isRealTimeUpdate && (
+            <div className="absolute top-2 right-2">
+              <div className="w-2 h-2 bg-cyan-400 rounded-full animate-ping"></div>
+            </div>
+          )}
         </div>
-        <div className="relative p-6 bg-slate-900/80 border border-purple-500/20 rounded-xl">
+        <div className={`relative p-6 bg-slate-900/80 border border-purple-500/20 rounded-xl transition-all duration-300 ${isRealTimeUpdate ? 'ring-2 ring-purple-400 scale-[1.02]' : ''}`}>
           <p className="text-slate-400 text-sm mb-1">활성 센터</p>
           <p className="text-white text-2xl mb-2">{settlements.length}개</p>
           <p className="text-slate-500 text-xs">정산 대상</p>

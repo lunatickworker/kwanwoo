@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { UserWalletManagement } from "./UserWalletManagement";
 import { SecurityMonitor } from "./SecurityMonitor";
 import { SwapManagement } from "./SwapManagement";
@@ -13,11 +13,37 @@ import { DepositWithdrawalManagement } from "./DepositWithdrawalManagement";
 import { StoreManagement } from "./StoreManagement";
 import { SettlementManagement as CenterSettlement } from "./center/SettlementManagement";
 import { SettlementManagement as AgencySettlement } from "./agency/SettlementManagement";
+import { SettlementManagement as StoreSettlement } from "./store/SettlementManagement";
 import { useAuth } from "../contexts/AuthContext";
 
 export function AdminApp() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const { user } = useAuth();
+
+  // URL 해시 변경 감지 및 탭 전환
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.slice(1); // # 제거
+      
+      // #admin 또는 #admin/ 인 경우 dashboard로 설정
+      if (hash === 'admin' || hash === 'admin/') {
+        setActiveTab('admin/dashboard');
+        window.location.hash = '#admin/dashboard';
+      } else if (hash) {
+        setActiveTab(hash);
+      }
+    };
+
+    // 초기 로드 시 해시 확인
+    handleHashChange();
+
+    // 해시 변경 이벤트 리스너
+    window.addEventListener('hashchange', handleHashChange);
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+    };
+  }, []);
 
   // 템플릿에 따라 배경색 변경
   const getBackgroundStyle = () => {
@@ -83,20 +109,26 @@ export function AdminApp() {
           <Header onNavigate={setActiveTab} />
           
           <main className="flex-1 overflow-y-auto p-6">
-            {activeTab === "dashboard" && <Dashboard />}
-            {activeTab === "users-wallets" && <UserWalletManagement />}
-            {activeTab === "store-management" && <StoreManagement />}
-            {activeTab === "account-verifications" && <AccountVerificationManagement />}
-            {activeTab === "gas-policy" && <GasSponsorshipPolicy />}
-            {activeTab === "deposit-withdrawal" && <DepositWithdrawalManagement />}
-            {activeTab === "swaps" && <SwapManagement />}
-            {activeTab === "settlement" && (user?.role === 'agency' ? <AgencySettlement /> : <CenterSettlement />)}
-            {activeTab === "coins" && <CoinManagement />}
-            {activeTab === "security" && <SecurityMonitor />}
-            {activeTab === "support-center" && <SupportCenter />}
+            {(activeTab === "dashboard" || activeTab === "admin/dashboard") && <Dashboard />}
+            {(activeTab === "users-wallets" || activeTab === "admin/users-wallets") && <UserWalletManagement />}
+            {(activeTab === "store-management" || activeTab === "admin/store-management") && <StoreManagement />}
+            {(activeTab === "account-verifications" || activeTab === "admin/account-verifications") && <AccountVerificationManagement />}
+            {(activeTab === "gas-policy" || activeTab === "admin/gas-policy") && <GasSponsorshipPolicy />}
+            {(activeTab === "deposit-withdrawal" || activeTab === "admin/deposit-withdrawal") && <DepositWithdrawalManagement />}
+            {(activeTab === "swaps" || activeTab === "admin/swaps") && <SwapManagement />}
+            {(activeTab === "settlement" || activeTab === "admin/settlement") && (
+              user?.role === 'agency' ? <AgencySettlement /> : 
+              user?.role === 'store' ? <StoreSettlement /> : 
+              <CenterSettlement />
+            )}
+            {(activeTab === "coins" || activeTab === "admin/coins") && <CoinManagement />}
+            {(activeTab === "security" || activeTab === "admin/security") && <SecurityMonitor />}
+            {(activeTab === "support-center" || activeTab === "admin/support-center") && <SupportCenter />}
           </main>
         </div>
       </div>
     </div>
   );
 }
+
+export default AdminApp;

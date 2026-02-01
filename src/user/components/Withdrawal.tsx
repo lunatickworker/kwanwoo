@@ -11,7 +11,7 @@ import { composeBiconomyTransaction, checkBiconomyAvailability } from '../../uti
 
 interface WithdrawalProps {
   wallets: WalletData[];
-  selectedCoin: CoinType;
+  selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
   onSelectCoin: (coin: CoinType) => void;
 }
@@ -243,14 +243,38 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
     setIsLoading(true);
 
     try {
+      // 1. TRON 네트워크 가스비 지원 여부 확인 (모든 출금에 적용)
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('gas_sponsor_enabled')
+        .eq('user_id', user?.id)
+        .single();
+
+      if (userError) {
+        console.error('사용자 정보 조회 실패:', userError);
+        toast.error('사용자 정보를 확인할 수 없습니다');
+        setIsLoading(false);
+        return;
+      }
+
+      if (!userData?.gas_sponsor_enabled) {
+        toast.error('가스비 지원이 비활성화되어 출금이 제한됩니다. 관리자에게 문의하세요.');
+        setIsLoading(false);
+        return;
+      }
+
+      console.log('✅ TRON 가스비 지원 확인됨:', userData.gas_sponsor_enabled);
+
       if (useSupertransaction) {
-        // Biconomy 사용 가능 여부 확인
+        // 2. Biconomy (Ethereum) 시스템 사용 가능 여부 확인
         const availability = await checkBiconomyAvailability();
         if (!availability.available) {
           toast.error(availability.message);
           setIsLoading(false);
           return;
         }
+
+        console.log('✅ Biconomy (Ethereum USDT 가스비) 사용 가능');
 
         // Supertransaction API 사용
         // 1. Compose

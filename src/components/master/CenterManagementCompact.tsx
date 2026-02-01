@@ -35,37 +35,75 @@ export function CenterManagementCompact() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
 
   useEffect(() => {
+    console.log('🔍 [CenterManagementCompact] useEffect 실행됨');
     fetchCenters();
   }, []);
 
   const fetchCenters = async () => {
     try {
+      console.log('🔍 [CenterManagementCompact] fetchCenters 시작');
       setLoading(true);
       
-      // 1. 센터 목록 조회
-      const { data: centersData, error: centersError } = await supabase
+      // 1. users 테이블에서 센터 role 조회 (대시보드와 동일한 방식)
+      const { data: usersData, error: usersError } = await supabase
         .from('users')
-        .select('user_id, center_name, username, email, domain, logo_url, template_id, is_active, created_at, parent_user_id, fee_rate')
+        .select('*')
         .eq('role', 'center')
         .order('created_at', { ascending: false });
 
-      if (centersError) throw centersError;
+      console.log('🔍 [CenterManagementCompact] users 테이블 쿼리 완료');
+      console.log('🔍 [CenterManagementCompact] usersData:', usersData);
+      console.log('🔍 [CenterManagementCompact] usersError:', usersError);
 
-      // 2. 각 센터의 도메인 매핑 조회
+      if (usersError) throw usersError;
+
+      console.log('✅ [CenterManagementCompact] Users 데이터:', usersData?.length, '개');
+
+      // 2. centers 테이블에서 추가 정보 조회 (있으면)
+      let centersMap = new Map();
+      try {
+        const { data: centersData, error: centersError } = await supabase
+          .from('centers')
+          .select('id, user_id, commission_rate, name');
+
+        if (!centersError && centersData) {
+          centersMap = new Map(centersData.map(c => [c.user_id, c]));
+          console.log('✅ [CenterManagementCompact] Centers 데이터:', centersData.length, '개');
+        }
+      } catch (err) {
+        console.warn('⚠️ [CenterManagementCompact] Centers 테이블 조회 실패 (무시):', err);
+      }
+
+      // 3. 각 센터의 도메인 매핑 조회
       const centersWithDomains = await Promise.all(
-        (centersData || []).map(async (center) => {
+        (usersData || []).map(async (user) => {
           const { data: domainMappings } = await supabase
             .from('domain_mappings')
             .select('domain, domain_type')
-            .eq('center_id', center.user_id)
+            .eq('center_id', user.user_id)
             .order('domain_type'); // main 먼저, admin 나중에
           
+          const centerInfo = centersMap.get(user.user_id);
+          
           return {
-            ...center,
+            user_id: user.user_id,
+            center_name: user.center_name || centerInfo?.name,
+            username: user.username,
+            email: user.email,
+            domain: user.domain,
+            logo_url: user.logo_url,
+            template_id: user.template_id,
+            is_active: user.is_active,
+            created_at: user.created_at,
+            parent_user_id: user.parent_user_id,
+            fee_rate: centerInfo?.commission_rate ?? 0, // centers.commission_rate 사용 (정산 시스템)
             mapped_domains: domainMappings || []
           };
         })
       );
+
+      console.log('✅ [CenterManagementCompact] 최종 센터 데이터:', centersWithDomains.length, '개');
+      console.log('🔍 [CenterManagementCompact] 첫 번째 센터:', centersWithDomains[0]);
 
       setCenters(centersWithDomains);
     } catch (error) {
@@ -109,6 +147,7 @@ export function CenterManagementCompact() {
   const handleCenterUpdated = () => {
     setShowEditModal(false);
     setSelectedCenter(null);
+    // 데이터 새로고침
     fetchCenters();
   };
 
@@ -378,7 +417,7 @@ export function CenterManagementCompact() {
                     </td>
                     <td className="py-3 px-3 text-right">
                       <span className="text-amber-400">
-                        {center.fee_rate}%
+                        {typeof center.fee_rate === 'number' ? center.fee_rate.toFixed(1) : center.fee_rate}%
                       </span>
                     </td>
                     <td className="py-3 px-3 text-center">

@@ -11,6 +11,7 @@ interface FeeRateHistoryItem {
   new_rate: number;
   changed_at: string;
   changed_by: string;
+  changed_by_name?: string; // 변경자 닉네임/아이디
 }
 
 export function FeeRateHistoryViewer() {
@@ -38,6 +39,7 @@ export function FeeRateHistoryViewer() {
 
       // 각 센터의 수수료율 변경 이력 수집
       const allHistory: FeeRateHistoryItem[] = [];
+      const changedByIds = new Set<string>(); // 중복 제거를 위한 Set
 
       centers?.forEach(center => {
         const feeRateHistory = center.metadata?.fee_rate_history || [];
@@ -51,8 +53,35 @@ export function FeeRateHistoryViewer() {
             changed_at: history.changed_at,
             changed_by: history.changed_by
           });
+
+          // 변경자 ID 수집
+          if (history.changed_by) {
+            changedByIds.add(history.changed_by);
+          }
         });
       });
+
+      // 변경자 정보 일괄 조회
+      if (changedByIds.size > 0) {
+        const { data: usersData, error: usersError } = await supabase
+          .from('users')
+          .select('user_id, username, center_name, role')
+          .in('user_id', Array.from(changedByIds));
+
+        if (!usersError && usersData) {
+          // 변경자 ID -> 이름 매핑 생성
+          const userMap = new Map<string, string>();
+          usersData.forEach(u => {
+            const displayName = u.center_name || u.username || u.user_id.slice(0, 8);
+            userMap.set(u.user_id, displayName);
+          });
+
+          // 각 히스토리 항목에 변경자 이름 추가
+          allHistory.forEach(item => {
+            item.changed_by_name = userMap.get(item.changed_by) || item.changed_by.slice(0, 8);
+          });
+        }
+      }
 
       // 시간순 정렬 (최신순)
       allHistory.sort((a, b) => 
@@ -200,12 +229,13 @@ export function FeeRateHistoryViewer() {
               <th className="text-center py-3 px-4 text-slate-400 text-sm">→</th>
               <th className="text-right py-3 px-4 text-slate-400 text-sm">변경 후</th>
               <th className="text-right py-3 px-4 text-slate-400 text-sm">변경폭</th>
+              <th className="text-left py-3 px-4 text-slate-400 text-sm">변경자</th>
             </tr>
           </thead>
           <tbody>
             {filteredHistory.length === 0 ? (
               <tr>
-                <td colSpan={6} className="text-center py-12 text-slate-500">
+                <td colSpan={7} className="text-center py-12 text-slate-500">
                   {searchTerm || dateFilter !== 'all' 
                     ? '검색 결과가 없습니다' 
                     : '수수료율 변경 이력이 없습니다'}
@@ -263,6 +293,11 @@ export function FeeRateHistoryViewer() {
                       ) : (
                         <span className="text-slate-500 text-sm">최초 설정</span>
                       )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="text-slate-400 text-sm">
+                        {item.changed_by_name || item.changed_by}
+                      </span>
                     </td>
                   </tr>
                 );

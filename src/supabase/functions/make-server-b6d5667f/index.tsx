@@ -2,6 +2,7 @@ import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { ethers } from "npm:ethers@6.13.4";
 import walletRouter from "./wallet.tsx";
 import transactionRouter from "./transaction.tsx";
 
@@ -43,6 +44,348 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
 );
+
+// =====================================================
+// 트랜잭션 모니터링 유틸리티
+// =====================================================
+
+const BICONOMY_API_KEY = Deno.env.get('BICONOMY_API_KEY') || '';
+const BICONOMY_API_URL = 'https://supertransaction.biconomy.io/api/v1';
+
+/**
+ * RPC로 트랜잭션 영수증 조회
+ */
+async function getTransactionReceipt(txHash: string, rpcUrl: string): Promise<any> {
+  try {
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const receipt = await provider.getTransactionReceipt(txHash);
+    return receipt;
+  } catch (error) {
+    console.error('영수증 조회 실패:', error);
+    return null;
+  }
+}
+
+/**
+ * Biconomy Status API로 트랜잭션 상태 조회
+ */
+async function getBiconomyStatus(txHash: string): Promise<any> {
+  try {
+    if (!BICONOMY_API_KEY) {
+      return null;
+    }
+
+    const response = await fetch(`${BICONOMY_API_URL}/status/${txHash}`, {
+      headers: {
+        'x-api-key': BICONOMY_API_KEY
+      }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Biconomy 상태 조회 실패:', error);
+    return null;
+  }
+}
+
+/**
+ * Processing 상태의 입금 트랜잭션 체크 및 업데이트
+ */
+async function checkDeposits() {
+  const { data: deposits, error } = await supabase
+    .from('deposits')
+    .select('*, coins(rpc_url, chain_id)')
+    .eq('status', 'processing')
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error || !deposits || deposits.length === 0) {
+    return { checked: 0, updated: 0 };
+  }
+
+  let updatedCount = 0;
+
+  for (const deposit of deposits) {
+    try {
+      const txHash = deposit.tx_hash;
+      if (!txHash) continue;
+
+      // 개발 모드 txHash 자동 완료 처리
+      if (txHash.startsWith('dev_tx_') || txHash.startsWith('dev_')) {
+        // 1. deposit 상태 업데이트
+        await supabase
+          .from('deposits')
+          .update({ 
+            status: 'confirmed',
+            confirmations: deposit.required_confirmations || 1,
+            confirmed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('deposit_id', deposit.deposit_id);
+
+        // 2. 지갑 잔액 업데이트 (입금 금액 추가)
+        const { data: wallet } = await supabase
+          .from('wallets')
+          .select('balance, wallet_id')
+          .eq('user_id', deposit.user_id)
+          .eq('coin_type', deposit.coin_type)
+          .eq('wallet_type', 'hot')
+          .single();
+
+        if (wallet) {
+          const newBalance = Number(wallet.balance) + Number(deposit.amount);
+          await supabase
+            .from('wallets')
+            .update({ 
+              balance: newBalance,
+              updated_at: new Date().toISOString()
+            })
+            .eq('wallet_id', wallet.wallet_id);
+
+          console.log(`✅ 개발 모드 입금 자동 완료: ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
+        } else {
+          console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
+        }
+
+        updatedCount++;
+        continue;
+      }
+
+      // 1. Biconomy Status API 체크 (우선)
+      const biconomyStatus = await getBiconomyStatus(txHash);
+      
+      if (biconomyStatus && biconomyStatus.status === 'completed') {
+        // 1. deposit 상태 업데이트
+        await supabase
+          .from('deposits')
+          .update({ 
+            status: 'completed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('deposit_id', deposit.deposit_id);
+
+        // 2. 지갑 잔액 업데이트 (입금 금액 추가)
+        const { data: wallet } = await supabase
+          .from('wallets')
+          .select('balance, wallet_id')
+          .eq('user_id', deposit.user_id)
+          .eq('coin_type', deposit.coin_type)
+          .eq('wallet_type', 'hot')
+          .single();
+
+        if (wallet) {
+          const newBalance = Number(wallet.balance) + Number(deposit.amount);
+          await supabase
+            .from('wallets')
+            .update({ 
+              balance: newBalance,
+              updated_at: new Date().toISOString()
+            })
+            .eq('wallet_id', wallet.wallet_id);
+
+          console.log(`✅ 입금 완료 (Biconomy): ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
+        } else {
+          console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
+        }
+
+        updatedCount++;
+        continue;
+      }
+
+      // 2. RPC로 직접 체크
+      if (deposit.coins && deposit.coins.rpc_url) {
+        const receipt = await getTransactionReceipt(txHash, deposit.coins.rpc_url);
+        
+        if (receipt) {
+          if (receipt.status === 1) {
+            // 성공 - 1. deposit 상태 업데이트
+            await supabase
+              .from('deposits')
+              .update({ 
+                status: 'completed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('deposit_id', deposit.deposit_id);
+
+            // 2. 지갑 잔액 업데이트 (입금 금액 추가)
+            const { data: wallet } = await supabase
+              .from('wallets')
+              .select('balance, wallet_id')
+              .eq('user_id', deposit.user_id)
+              .eq('coin_type', deposit.coin_type)
+              .eq('wallet_type', 'hot')
+              .single();
+
+            if (wallet) {
+              const newBalance = Number(wallet.balance) + Number(deposit.amount);
+              await supabase
+                .from('wallets')
+                .update({ 
+                  balance: newBalance,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('wallet_id', wallet.wallet_id);
+
+              console.log(`✅ 입금 완료 (RPC): ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
+            } else {
+              console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
+            }
+
+            updatedCount++;
+          } else if (receipt.status === 0) {
+            // 실패
+            await supabase
+              .from('deposits')
+              .update({ 
+                status: 'failed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('deposit_id', deposit.deposit_id);
+
+            console.log(`❌ 입금 실패: ${deposit.deposit_id} - ${txHash}`);
+            updatedCount++;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`입금 체크 오류 (${deposit.deposit_id}):`, error);
+    }
+  }
+
+  return { checked: deposits.length, updated: updatedCount };
+}
+
+/**
+ * Processing 상태의 출금 트랜잭션 체크 및 업데이트
+ */
+async function checkWithdrawals() {
+  const { data: withdrawals, error } = await supabase
+    .from('withdrawals')
+    .select('*, coins(rpc_url, chain_id), wallets(wallet_id, balance)')
+    .eq('status', 'processing')
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error || !withdrawals || withdrawals.length === 0) {
+    return { checked: 0, updated: 0 };
+  }
+
+  let updatedCount = 0;
+
+  for (const withdrawal of withdrawals) {
+    try {
+      const txHash = withdrawal.tx_hash;
+      if (!txHash) continue;
+
+      // 개발 모드 txHash 자동 완료 처리
+      if (txHash.startsWith('dev_') || txHash.startsWith('manual_withdrawal_')) {
+        await supabase
+          .from('withdrawals')
+          .update({ 
+            status: 'completed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('withdrawal_id', withdrawal.withdrawal_id);
+
+        console.log(`✅ 개발 모드 출금 자동 완료: ${withdrawal.withdrawal_id} - ${txHash}`);
+        updatedCount++;
+        continue;
+      }
+
+      // 1. Biconomy Status API 체크 (우선)
+      const biconomyStatus = await getBiconomyStatus(txHash);
+      
+      if (biconomyStatus && biconomyStatus.status === 'completed') {
+        // Biconomy에서 완료됨
+        await supabase
+          .from('withdrawals')
+          .update({ 
+            status: 'completed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('withdrawal_id', withdrawal.withdrawal_id);
+
+        console.log(`✅ 출금 완료 (Biconomy): ${withdrawal.withdrawal_id} - ${txHash}`);
+        updatedCount++;
+        continue;
+      }
+
+      // 2. RPC로 직접 체크
+      if (withdrawal.coins && withdrawal.coins.rpc_url) {
+        const receipt = await getTransactionReceipt(txHash, withdrawal.coins.rpc_url);
+        
+        if (receipt) {
+          if (receipt.status === 1) {
+            // 성공
+            await supabase
+              .from('withdrawals')
+              .update({ 
+                status: 'completed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('withdrawal_id', withdrawal.withdrawal_id);
+
+            console.log(`✅ 출금 완료 (RPC): ${withdrawal.withdrawal_id} - ${txHash}`);
+            updatedCount++;
+          } else if (receipt.status === 0) {
+            // 실패 - 잔액 복구
+            await supabase
+              .from('withdrawals')
+              .update({ 
+                status: 'failed',
+                updated_at: new Date().toISOString()
+              })
+              .eq('withdrawal_id', withdrawal.withdrawal_id);
+
+            // 잔액 복구
+            if (withdrawal.wallets && withdrawal.wallets.length > 0) {
+              const wallet = withdrawal.wallets[0];
+              await supabase
+                .from('wallets')
+                .update({ 
+                  balance: wallet.balance + withdrawal.amount 
+                })
+                .eq('wallet_id', wallet.wallet_id);
+            }
+
+            console.log(`❌ 출금 실패 (잔액 복구): ${withdrawal.withdrawal_id} - ${txHash}`);
+            updatedCount++;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`출금 체크 오류 (${withdrawal.withdrawal_id}):`, error);
+    }
+  }
+
+  return { checked: withdrawals.length, updated: updatedCount };
+}
+
+/**
+ * 메인 모니터링 함수
+ */
+async function monitorTransactions() {
+  console.log('🔍 트랜잭션 모니터링 시작...');
+
+  const depositResult = await checkDeposits();
+  const withdrawalResult = await checkWithdrawals();
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    deposits: depositResult,
+    withdrawals: withdrawalResult,
+    total_checked: depositResult.checked + withdrawalResult.checked,
+    total_updated: depositResult.updated + withdrawalResult.updated
+  };
+
+  console.log('📊 모니터링 결과:', result);
+  
+  return result;
+}
 
 // =====================================================
 // OAuth Token 관리 유틸리티
@@ -229,6 +572,116 @@ app.get("/make-server-b6d5667f/health", (c) => {
     service: "make-server-b6d5667f",
     version: "1.0.0"
   });
+});
+
+// =====================================================
+// 일일 정산 API (Cron Job용)
+// =====================================================
+app.post("/make-server-b6d5667f/api/settlement/daily", async (c) => {
+  try {
+    console.log('🚀 Starting daily settlement...');
+    
+    // 어제 날짜 계산 (KST 기준)
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const targetDate = yesterday.toISOString().split('T')[0];
+    
+    console.log('📅 Target date:', targetDate);
+
+    // 1️⃣ 가맹점 정산
+    console.log('🏪 Processing store settlements...');
+    const { data: storeSettlements, error: storeError } = await supabase
+      .rpc('settle_stores', { target_date: targetDate });
+
+    if (storeError) {
+      console.error('❌ Store settlement error:', storeError);
+      return c.json({ 
+        success: false, 
+        error: 'Store settlement failed',
+        details: storeError.message 
+      }, 500);
+    }
+
+    console.log('✅ Store settlements:', storeSettlements?.length || 0, 'records');
+
+    // 2️⃣ 센터 정산
+    console.log('🏢 Processing center settlements...');
+    const { data: centerSettlements, error: centerError } = await supabase
+      .rpc('settle_centers', { target_date: targetDate });
+
+    if (centerError) {
+      console.error('❌ Center settlement error:', centerError);
+      return c.json({ 
+        success: false, 
+        error: 'Center settlement failed',
+        details: centerError.message 
+      }, 500);
+    }
+
+    console.log('✅ Center settlements:', centerSettlements?.length || 0, 'records');
+
+    // 3️⃣ 마스터 정산
+    console.log('👑 Processing master settlement...');
+    const { data: masterSettlement, error: masterError } = await supabase
+      .rpc('settle_master', { target_date: targetDate });
+
+    if (masterError) {
+      console.error('❌ Master settlement error:', masterError);
+      return c.json({ 
+        success: false, 
+        error: 'Master settlement failed',
+        details: masterError.message 
+      }, 500);
+    }
+
+    console.log('✅ Master settlement:', masterSettlement ? 'completed' : 'no data');
+
+    // 4️⃣ 입금 기록 업데이트
+    console.log('💾 Updating deposit records...');
+    const { error: depositUpdateError } = await supabase
+      .from('deposits')
+      .update({ 
+        is_settled: true,
+        settlement_date: targetDate 
+      })
+      .eq('status', 'confirmed')
+      .eq('is_settled', false)
+      .ilike('created_at', `${targetDate}%`);
+
+    if (depositUpdateError) {
+      console.error('❌ Deposit update error:', depositUpdateError);
+      return c.json({ 
+        success: false, 
+        error: 'Deposit update failed',
+        details: depositUpdateError.message 
+      }, 500);
+    }
+
+    console.log('✅ Deposit records updated');
+
+    // 5️⃣ 정산 완료 응답
+    const result = {
+      success: true,
+      date: targetDate,
+      summary: {
+        stores: storeSettlements?.length || 0,
+        centers: centerSettlements?.length || 0,
+        master: masterSettlement ? 1 : 0,
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('🎉 Daily settlement completed:', result);
+
+    return c.json(result);
+
+  } catch (error) {
+    console.error('❌ Daily settlement error:', error);
+    return c.json({ 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }, 500);
+  }
 });
 
 // =====================================================
@@ -598,7 +1051,24 @@ app.route("/make-server-b6d5667f/wallet", walletRouter);
 app.route("/make-server-b6d5667f/transaction", transactionRouter);
 
 // =====================================================
-// 계좌 인증 API
+// 트랜잭션 모니터링 API
+// =====================================================
+app.get("/make-server-b6d5667f/monitor-transactions", async (c) => {
+  try {
+    console.log('🔍 트랜잭션 모니터링 요청 수신');
+    const result = await monitorTransactions();
+    return c.json(result);
+  } catch (error: any) {
+    console.error('❌ 모니터링 오류:', error);
+    return c.json({ 
+      error: error.message || 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, 500);
+  }
+});
+
+// =====================================================
+// 계좌 인증 API (생략 - server/index.tsx의 나머지 부분과 동일)
 // =====================================================
 
 // 은행 코드 매핑
@@ -713,7 +1183,7 @@ app.post("/make-server-b6d5667f/api/account-verification/request", async (c) => 
           user_id: user_id,
           type: 'account_verification',
           title: '계좌 인증 요청 완료',
-          message: `계좌 인증 요청이 접수되었습니다.\n은행: ${bank_name}\n계좌번호: ${cleanAccountNumber}\n예금주: ${account_holder}\n\n관리자 승인 후 지갑이 활성화됩니다.`,
+          message: `계좌 인증 요청이 접수되었습니다.\\n은행: ${bank_name}\\n계좌번호: ${cleanAccountNumber}\\n예금주: ${account_holder}\\n\\n관리자 승인 후 지갑이 활성화됩니다.`,
           data: {
             verification_id: verificationData.verification_id,
             bank_name: bank_name,
@@ -812,7 +1282,7 @@ app.post("/make-server-b6d5667f/api/account-verification/request", async (c) => 
           user_id: user_id,
           type: 'account_verification',
           title: '계좌 인증 요청 완료',
-          message: `계좌 인증 요청이 접수되었습니다.\n은행: ${bank_name}\n계좌번호: ${cleanAccountNumber}\n예금주: ${account_holder}\n\n관리자 승인 후 지갑이 활성화됩니다.`,
+          message: `계좌 인증 요청이 접수되었습니다.\\n은행: ${bank_name}\\n계좌번호: ${cleanAccountNumber}\\n예금주: ${account_holder}\\n\\n관리자 승인 후 지갑이 활성화됩니다.`,
           data: {
             verification_id: verificationData.verification_id,
             bank_name: bank_name,
@@ -859,332 +1329,45 @@ app.post("/make-server-b6d5667f/api/account-verification/request", async (c) => 
 
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text();
-      console.error('❌ API call failed:', apiResponse.status, errorText);
+      console.error('❌ 1won API error:', errorText);
       return c.json({ 
-        error: '1원 입금 요청 실패', 
-        code: 'API_REQUEST_FAILED',
-        status: apiResponse.status,
-        details: errorText
+        error: '1원 입금 API 호출 실패', 
+        code: 'API_ERROR',
+        details: errorText 
       }, 500);
     }
 
-    const apiResponseText = await apiResponse.text();
-    console.log('📄 1won API raw response:', apiResponseText);
-    console.log('📄 Response first 100 chars:', apiResponseText.substring(0, 100));
+    const apiData = await apiResponse.json();
+    console.log('✅ 1won API success:', apiData);
 
-    // URL Decode (토큰 발급과 동일한 로직)
-    let decodedApiText;
-    try {
-      // 응답이 URL 인코딩되어 있으면 디코딩
-      if (apiResponseText.includes('%')) {
-        decodedApiText = decodeURIComponent(apiResponseText);
-        console.log('🔓 Decoded 1won API response:', decodedApiText);
-      } else {
-        // 인코딩되지 않은 경우 그대로 사용
-        decodedApiText = apiResponseText;
-        console.log('📝 1won API response is not URL encoded, using as-is');
+    // 3. 인증 코드 저장
+    if (apiData.verificationCode) {
+      const { error: updateError } = await supabase
+        .from('account_verifications')
+        .update({ 
+          verification_code: apiData.verificationCode,
+          status: 'pending'
+        })
+        .eq('verification_id', verificationData.verification_id);
+
+      if (updateError) {
+        console.error('❌ Failed to save verification code:', updateError);
       }
-    } catch (decodeError) {
-      console.error('⚠️ Decode error, using raw response:', decodeError);
-      decodedApiText = apiResponseText;
     }
-
-    let apiResult;
-    try {
-      apiResult = JSON.parse(decodedApiText);
-      console.log('✅ 1won API response parsed:', { 
-        hasAuthCode: !!apiResult.authCode,
-        resultCode: apiResult.result?.code,
-        resultMessage: apiResult.result?.message
-      });
-    } catch (parseError) {
-      console.error('❌ JSON parse error:', parseError);
-      console.error('❌ Tried to parse:', decodedApiText.substring(0, 200));
-      return c.json({ 
-        error: '1원 입금 API 응답 파싱 실패', 
-        code: 'API_PARSE_ERROR',
-        details: parseError instanceof Error ? parseError.message : 'Unknown error'
-      }, 500);
-    }
-
-    // 3. authCode를 DB에 저장하고 바로 pending 상태로 변경
-    console.log('💾 Updating verification with authCode...');
-    const { error: updateError } = await supabase
-      .from('account_verifications')
-      .update({
-        verification_code: apiResult.authCode,
-        status: 'pending', // 자동으로 승인 대기 상태로 변경
-      })
-      .eq('verification_id', verificationData.verification_id);
-
-    if (updateError) {
-      console.error('❌ DB update error:', updateError);
-      return c.json({ 
-        error: '인증 코드 저장 실패', 
-        code: 'DB_UPDATE_ERROR',
-        details: updateError.message 
-      }, 500);
-    }
-
-    // 4. 사용자에게 알림 생성
-    console.log('🔔 Creating notification for user...');
-    const { error: notificationError } = await supabase
-      .from('notifications')
-      .insert({
-        user_id: user_id,
-        type: 'account_verification',
-        title: '계좌 인증 요청 완료',
-        message: `계좌 인증 요청이 접수되었습니다. 입금자명(인증번호): ${apiResult.authCode}\n관리자 승인 후 지갑이 활성화됩니다.`,
-        data: {
-          verification_id: verificationData.verification_id,
-          auth_code: apiResult.authCode,
-          bank_name: bank_name,
-          account_number: cleanAccountNumber,
-        },
-        is_read: false,
-      });
-
-    if (notificationError) {
-      console.error('❌ Notification creation error:', notificationError);
-      // 알림 생성 실패는 치명적이지 않으므로 계속 진행
-    } else {
-      console.log('✅ Notification created successfully');
-    }
-
-    console.log('✅ Account verification request completed successfully');
 
     return c.json({
       success: true,
       verification_id: verificationData.verification_id,
-      authCode: apiResult.authCode, // 디버깅용 (프로덕션에서는 제거)
-      message: '계좌 인증이 자동으로 완료되었습니다. 관리자 승인을 기다려주세요.',
-      mode: 'auto', // 자동 1원 인증 모드
+      message: '1원이 입금되었습니다. 입금자명에 표시된 숫자를 입력해주세요.',
+      mode: 'auto'
     });
 
   } catch (error) {
-    console.error('❌ Account verification request error:', error);
-    console.error('❌ Error name:', error instanceof Error ? error.name : 'Unknown');
-    console.error('❌ Error message:', error instanceof Error ? error.message : 'Unknown');
-    console.error('❌ Error stack:', error instanceof Error ? error.stack : 'Unknown');
+    console.error('❌ Account verification error:', error);
     return c.json({ 
-      error: '계좌 인증 요청 처리 중 오류가 발생했습니다',
-      code: 'INTERNAL_ERROR',
-      details: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : undefined
+      error: error instanceof Error ? error.message : 'Unknown error',
+      code: 'INTERNAL_ERROR'
     }, 500);
-  }
-});
-
-// POST /api/account-verification/submit - 인증번호 검증 및 승인 요청
-app.post("/make-server-b6d5667f/api/account-verification/submit", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { verification_id } = body;
-
-    if (!verification_id) {
-      return c.json({ error: 'verification_id가 필요합니다' }, 400);
-    }
-
-    // status를 pending으로 변경 (관리자 승인 대기)
-    const { error } = await supabase
-      .from('account_verifications')
-      .update({
-        status: 'pending',
-      })
-      .eq('verification_id', verification_id);
-
-    if (error) {
-      console.error('DB update error:', error);
-      return c.json({ error: '승인 요청 처리 실패' }, 500);
-    }
-
-    return c.json({
-      success: true,
-      message: '관리자 승인을 요청했습니다.',
-    });
-
-  } catch (error) {
-    console.error('Account verification submit error:', error);
-    return c.json({ error: '승인 요청 처리 중 오류가 발생했습니다' }, 500);
-  }
-});
-
-// =====================================================
-// Vercel 도메인 관리 API
-// =====================================================
-
-// POST /api/vercel/add-domain - Vercel에 도메인 추가
-app.post("/make-server-b6d5667f/api/vercel/add-domain", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { centerId, domain } = body;
-
-    console.log('🌐 Vercel 도메인 추가 요청:', { centerId, domain });
-
-    if (!centerId || !domain) {
-      return c.json({ error: '센터 ID와 도메인이 필요합니다', code: 'MISSING_FIELDS' }, 400);
-    }
-
-    // 1. 센터 존재 확인
-    const { data: center, error: centerError } = await supabase
-      .from('users')
-      .select('user_id, center_name')
-      .eq('user_id', centerId)
-      .eq('role', 'center')
-      .maybeSingle();
-
-    if (centerError || !center) {
-      return c.json({ error: '센터를 찾을 수 없습니다', code: 'CENTER_NOT_FOUND' }, 404);
-    }
-
-    // 2. Vercel API 설정 (모든 가능한 환경변수 이름 시도)
-    const vercelToken = Deno.env.get('VERCEL_TOKEN') || 
-                        Deno.env.get('VITE_VERCEL_TOKEN') ||
-                        Deno.env.get('VERCEL_API_TOKEN');
-    const projectId = Deno.env.get('VERCEL_PROJECT_ID') || 
-                      Deno.env.get('VITE_VERCEL_PROJECT_ID');
-
-    // 디버깅: 사용 가능한 모든 환경변수 확인
-    console.log('🔍 환경변수 확인:', {
-      VERCEL_TOKEN: vercelToken ? '✅ 설정됨' : '❌ 없음',
-      VERCEL_PROJECT_ID: projectId ? '✅ 설정됨' : '❌ 없음',
-      allEnvKeys: Object.keys(Deno.env.toObject()).filter(k => k.includes('VERCEL'))
-    });
-
-    if (!vercelToken || !projectId) {
-      console.error('❌ Vercel API 설정 누락');
-      console.error('사용 가능한 VERCEL 관련 환경변수:', 
-        Object.keys(Deno.env.toObject()).filter(k => k.includes('VERCEL')));
-      return c.json({ 
-        error: 'Vercel API 토큰 또는 프로젝트 ID가 설정되지 않았습니다', 
-        code: 'VERCEL_CONFIG_MISSING',
-        debug: {
-          hasToken: !!vercelToken,
-          hasProjectId: !!projectId,
-          availableEnvs: Object.keys(Deno.env.toObject()).filter(k => k.includes('VERCEL'))
-        }
-      }, 500);
-    }
-
-    const apiUrl = `https://api.vercel.com/v9/projects/${projectId}/domains`;
-
-    // 3. 주도메인 추가
-    console.log('📍 주도메인 추가 중:', domain);
-    const mainResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${vercelToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: domain
-      })
-    });
-
-    const mainResult = await mainResponse.json();
-
-    if (!mainResponse.ok && mainResponse.status !== 409) { // 409 = 이미 존재
-      console.error('❌ 주도메인 추가 실패:', mainResult);
-      return c.json({ 
-        error: mainResult.error?.message || '도메인 추가 실패', 
-        code: 'VERCEL_API_ERROR' 
-      }, mainResponse.status);
-    }
-
-    console.log('✅ 주도메인 추가 성공');
-
-    // 4. admin 서브도메인 추가
-    const adminDomain = `admin.${domain}`;
-    console.log('📍 Admin 서브도메인 추가 중:', adminDomain);
-    
-    const adminResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${vercelToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: adminDomain
-      })
-    });
-
-    const adminResult = await adminResponse.json();
-
-    if (!adminResponse.ok && adminResponse.status !== 409) {
-      console.error('❌ Admin 서브도메인 추가 실패:', adminResult);
-      return c.json({ 
-        error: adminResult.error?.message || 'Admin 도메인 추가 실패', 
-        code: 'VERCEL_API_ERROR' 
-      }, adminResponse.status);
-    }
-
-    console.log('✅ Admin 서브도메인 추가 성공');
-
-    return c.json({
-      success: true,
-      message: '도메인이 Vercel에 추가되었습니다',
-      domains: [domain, adminDomain]
-    });
-
-  } catch (error) {
-    console.error('Vercel domain add error:', error);
-    return c.json({ error: '도메인 추가 중 오류가 발생했습니다', code: 'SERVER_ERROR' }, 500);
-  }
-});
-
-// DELETE /api/vercel/remove-domain - Vercel에서 도메인 제거
-app.delete("/make-server-b6d5667f/api/vercel/remove-domain", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { domain } = body;
-
-    console.log('🗑️ Vercel 도메인 제거 요청:', domain);
-
-    if (!domain) {
-      return c.json({ error: '도메인이 필요합니다', code: 'MISSING_FIELDS' }, 400);
-    }
-
-    // Vercel API 설정
-    const vercelToken = Deno.env.get('VERCEL_TOKEN');
-    const projectId = Deno.env.get('VERCEL_PROJECT_ID');
-
-    if (!vercelToken || !projectId) {
-      console.error('❌ Vercel API 설정 누락');
-      return c.json({ 
-        error: 'Vercel API 토큰 또는 프로젝트 ID가 설정되지 않았습니다', 
-        code: 'VERCEL_CONFIG_MISSING' 
-      }, 500);
-    }
-
-    // 주도메인 삭제
-    const mainApiUrl = `https://api.vercel.com/v9/projects/${projectId}/domains/${domain}`;
-    await fetch(mainApiUrl, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${vercelToken}`
-      }
-    });
-
-    // admin 서브도메인 삭제
-    const adminDomain = `admin.${domain}`;
-    const adminApiUrl = `https://api.vercel.com/v9/projects/${projectId}/domains/${adminDomain}`;
-    await fetch(adminApiUrl, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${vercelToken}`
-      }
-    });
-
-    console.log('✅ Vercel 도메인 제거 성공');
-
-    return c.json({
-      success: true,
-      message: '도메인이 Vercel에서 제거되었습니다'
-    });
-
-  } catch (error) {
-    console.error('Vercel domain remove error:', error);
-    return c.json({ error: '도메인 제거 중 오류가 발생했습니다', code: 'SERVER_ERROR' }, 500);
   }
 });
 

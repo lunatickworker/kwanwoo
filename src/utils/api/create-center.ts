@@ -153,7 +153,6 @@ export async function createCenter(
         domain: domain || null, // 도메인 없으면 null
         template_id: templateId || 'modern',
         logo_url: logoUrl,
-        fee_rate: feeRate || 3.0, // 수수료율 (기본값 3%)
         is_active: true,
         kyc_status: 'pending',
         balance: {},
@@ -172,7 +171,39 @@ export async function createCenter(
     
     console.log('✅ Users 테이블 삽입 성공:', centerId);
     
-    // 6. Domain Mappings 자동 생성 (도메인이 있을 경우에만)
+    // 6. Centers 테이블에 센터 정보 저장 (정산 시스템용)
+    console.log('💾 Centers 테이블 삽입 시작...');
+    const { error: centersInsertError } = await supabase
+      .from('centers')
+      .insert({
+        user_id: centerId, // users 테이블과 연결
+        name: centerName,
+        code: referralCode, // 추천인 코드를 센터 코드로 사용
+        agency_id: parentAgencyId || null,
+        commission_rate: feeRate || 10, // 센터 수수료율 (기본 10% = 입금액의 0.2%)
+        status: 'active',
+        operation_mode: 'production',
+        contact_email: email,
+        daily_limit: 1000000, // 기본값
+        monthly_limit: 10000000, // 기본값
+        metadata: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+    
+    if (centersInsertError) {
+      console.error('❌ Centers 테이블 삽입 오류:', centersInsertError);
+      // 롤백
+      await supabase.from('users').delete().eq('user_id', centerId);
+      return {
+        success: false,
+        error: centersInsertError.message
+      };
+    }
+    
+    console.log('✅ Centers 테이블 삽입 성공');
+    
+    // 7. Domain Mappings 자동 생성 (도메인이 있을 경우에만)
     if (domain) {
       console.log('🌐 Domain Mappings 생성 시작...');
       const domainMappings = [
@@ -210,7 +241,7 @@ export async function createCenter(
       console.log('⏭️ 도메인 없음 - Domain Mappings 생성 생략');
     }
     
-    // 7. 수수료율 초기 이력 기록
+    // 8. 수수료율 초기 이력 기록
     console.log('📊 수수료율 이력 기록 시작...');
     await recordFeeRateChange({
       centerId,
@@ -221,7 +252,7 @@ export async function createCenter(
     
     console.log('✅ 센터 생성 완료!');
     
-    // 8. 성공
+    // 9. 성공
     return {
       success: true,
       centerId

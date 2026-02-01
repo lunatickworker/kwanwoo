@@ -53,22 +53,45 @@ export function StoreManagement() {
     try {
       console.log('🏪 Fetching stores for center:', user?.id);
       
-      // 현재 센터의 가맹점만 조회 (role='store' AND parent_user_id=센터ID)
-      const { data, error } = await supabase
+      // 현재 센터의 가맹점 조회 (users 테이블)
+      const { data: userData, error: userError } = await supabase
         .from('users')
         .select('*')
         .eq('role', 'store')
         .eq('parent_user_id', user?.id)
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('❌ Error fetching stores:', error);
+      if (userError) {
+        console.error('❌ Error fetching stores:', userError);
         toast.error('가맹점 데이터를 가져오는데 실패했습니다');
         return;
       }
 
-      console.log('✅ Stores loaded:', data?.length || 0);
-      setStores(data || []);
+      // stores 테이블에서 수수료율 정보 조회
+      const userIds = userData?.map(u => u.user_id) || [];
+      const { data: storesData, error: storesError } = await supabase
+        .from('stores')
+        .select('user_id, commission_rate')
+        .in('user_id', userIds);
+
+      if (storesError) {
+        console.error('❌ Error fetching fee rates:', storesError);
+      }
+
+      // fee_rate 맵 생성
+      const feeRateMap = new Map();
+      storesData?.forEach(store => {
+        feeRateMap.set(store.user_id, store.commission_rate);
+      });
+
+      // userData와 feeRate 병합
+      const mergedData = userData?.map(user => ({
+        ...user,
+        fee_rate: feeRateMap.get(user.user_id) || 0
+      })) || [];
+
+      console.log('✅ Stores loaded:', mergedData.length);
+      setStores(mergedData);
     } catch (error) {
       console.error('❌ Error:', error);
       toast.error('가맹점 데이터를 가져오는데 실패했습니다');
@@ -197,18 +220,34 @@ export function StoreManagement() {
         username: editFormData.username,
       };
 
-      // 비밀번호 변경 시
+      // 비밀번호 변경 시 - Backend API 사용
       if (editFormData.password) {
         updateData.password_hash = editFormData.password;
         
-        // Auth 비밀번호도 업데이트
-        const { error: authError } = await supabase.auth.admin.updateUserById(
-          selectedStore.user_id,
-          { password: editFormData.password }
-        );
-        
-        if (authError) {
-          console.error('Auth 비밀번호 변경 실패:', authError);
+        // Backend API로 Auth 비밀번호 업데이트
+        try {
+          const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
+          const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
+          
+          const response = await fetch(`${backendUrl}/api/auth/change-password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${anonKey}`
+            },
+            body: JSON.stringify({
+              user_id: selectedStore.user_id,
+              new_password: editFormData.password
+            })
+          });
+
+          if (!response.ok) {
+            console.error('Auth 비밀번호 변경 실패');
+            // Auth 업데이트 실패해도 계속 진행
+          }
+        } catch (authErr) {
+          console.error('Auth 업데이트 오류:', authErr);
+          // 오류가 발생해도 계속 진행
         }
       }
 

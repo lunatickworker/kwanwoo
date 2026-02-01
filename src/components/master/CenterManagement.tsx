@@ -18,6 +18,8 @@ interface Center {
   design_theme: any;
   metadata: any;
   fee_rate: number;
+  commission_rate?: number; // centers 테이블에서 가져옴
+  center_id?: string; // centers.id
   mapped_domains?: string[]; // 도메인 매핑 추가
 }
 
@@ -37,23 +39,74 @@ export function CenterManagement() {
   const [showTreeView, setShowTreeView] = useState(false);
 
   useEffect(() => {
+    console.log('🔍 [CenterManagement] useEffect 실행됨');
     fetchCenters();
   }, []);
 
   const fetchCenters = async () => {
     try {
+      console.log('🔍 [CenterManagement] fetchCenters 시작');
       setLoading(true);
-      const { data, error } = await supabase
+      
+      // users 테이블에서 센터 role 조회
+      const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('*')
         .eq('role', 'center')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      setCenters(data || []);
+      console.log('🔍 [CenterManagement] Supabase 쿼리 완료');
+      console.log('🔍 [CenterManagement] usersData:', usersData);
+      console.log('🔍 [CenterManagement] usersError:', usersError);
+
+      if (usersError) {
+        console.error('❌ Users 조회 실패:', usersError);
+        throw usersError;
+      }
+
+      console.log('✅ Users 데이터:', usersData?.length, '개');
+      console.log('🔍 [CenterManagement] 첫 번째 users 데이터:', usersData?.[0]);
+
+      // centers 테이블 존재 여부 확인 및 조회
+      let centersData = null;
+      try {
+        const { data, error: centersError } = await supabase
+          .from('centers')
+          .select('id, user_id, commission_rate, name');
+
+        if (centersError) {
+          console.warn('⚠️ Centers 테이블 조회 실패 (user_id 컬럼 없을 수 있음):', centersError.message);
+          // centers 테이블이 없거나 user_id 컬럼이 없으면 무시
+        } else {
+          centersData = data;
+          console.log('✅ Centers 데이터:', centersData?.length, '개');
+        }
+      } catch (err) {
+        console.warn('⚠️ Centers 테이블 조회 중 예외:', err);
+      }
+
+      // user_id로 매핑 (centers 데이터가 있을 경우만)
+      const centersMap = new Map(
+        (centersData || []).map(c => [c.user_id, c])
+      );
+
+      // 데이터 병합
+      const mergedCenters = (usersData || []).map(user => ({
+        ...user,
+        commission_rate: centersMap.get(user.user_id)?.commission_rate || user.fee_rate || 0,
+        center_id: centersMap.get(user.user_id)?.id,
+        fee_rate: centersMap.get(user.user_id)?.commission_rate || user.fee_rate || 0, // UI 호환성
+      }));
+
+      console.log('✅ 병합된 센터 데이터:', mergedCenters.length, '개');
+      console.log('📊 첫 번째 센터:', mergedCenters[0]);
+
+      console.log('🔍 [CenterManagement] setCenters 호출 전');
+      setCenters(mergedCenters);
+      console.log('🔍 [CenterManagement] setCenters 호출 완료');
 
       // 에이전시 정보 조회 (부모가 있는 센터들)
-      const parentIds = (data || [])
+      const parentIds = (usersData || [])
         .map(c => c.parent_user_id)
         .filter(Boolean) as string[];
 
@@ -69,10 +122,11 @@ export function CenterManagement() {
             agenciesMap[a.user_id] = a;
           });
           setAgencies(agenciesMap);
+          console.log('✅ 에이전시 데이터:', Object.keys(agenciesMap).length, '개');
         }
       }
     } catch (error) {
-      console.error('센터 조회 실패:', error);
+      console.error('❌ 센터 조회 실패:', error);
       toast.error('센터 목록을 불러오는데 실패했습니다');
     } finally {
       setLoading(false);
@@ -122,6 +176,11 @@ export function CenterManagement() {
     if (filterAgencyId === 'direct') return !center.parent_user_id;
     return center.parent_user_id === filterAgencyId;
   });
+
+  console.log('🔍 [CenterManagement] Render - centers.length:', centers.length);
+  console.log('🔍 [CenterManagement] Render - filteredCenters.length:', filteredCenters.length);
+  console.log('🔍 [CenterManagement] Render - filterAgencyId:', filterAgencyId);
+  console.log('🔍 [CenterManagement] Render - loading:', loading);
 
   if (loading) {
     return (
@@ -365,7 +424,9 @@ export function CenterManagement() {
                   </div>
                   <div>
                     <p className="text-slate-500">수수료율</p>
-                    <p className="text-amber-400">{center.fee_rate}%</p>
+                    <p className="text-amber-400">
+                      {typeof center.fee_rate === 'number' ? center.fee_rate.toFixed(1) : center.fee_rate}%
+                    </p>
                   </div>
                   <div>
                     <p className="text-slate-500">생성일</p>

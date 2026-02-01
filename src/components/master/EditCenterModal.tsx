@@ -8,6 +8,8 @@ import { useAuth } from '../../contexts/AuthContext';
 interface Center {
   user_id: string;
   center_name: string;
+  username: string;
+  email: string;
   domain: string;
   logo_url: string | null;
   template_id: string;
@@ -38,6 +40,13 @@ const TEMPLATES = [
   { id: 'luxury', label: 'Luxury', description: '고급스러운 프리미엄 디자인' }
 ];
 
+// 숫자를 안전하게 변환하는 헬퍼 함수
+const safeNumber = (value: any, defaultValue: number = 0): number => {
+  if (value === null || value === undefined || value === '') return defaultValue;
+  const num = typeof value === 'number' ? value : parseFloat(value);
+  return isNaN(num) ? defaultValue : num;
+};
+
 export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalProps) {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
@@ -46,9 +55,9 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
     template_id: center.template_id,
     parent_user_id: center.parent_user_id || '',
     logo_url: center.logo_url || '',
-    fee_rate: center.fee_rate || 3,
-    daily_limit: center.metadata?.limits?.dailyWithdrawal || 1000000,
-    monthly_limit: center.metadata?.limits?.monthlyWithdrawal || 10000000,
+    fee_rate: safeNumber(center.fee_rate, 0),
+    daily_limit: safeNumber(center.metadata?.limits?.dailyWithdrawal, 1000000),
+    monthly_limit: safeNumber(center.metadata?.limits?.monthlyWithdrawal, 10000000),
     new_password: '',
     confirm_password: '',
   });
@@ -60,6 +69,23 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [feeRateHistory, setFeeRateHistory] = useState<any[]>([]);
+
+  // center prop이 변경될 때 formData 업데이트
+  useEffect(() => {
+    setFormData({
+      center_name: center.center_name,
+      domain: center.domain || '',
+      template_id: center.template_id,
+      parent_user_id: center.parent_user_id || '',
+      logo_url: center.logo_url || '',
+      fee_rate: safeNumber(center.fee_rate, 0),
+      daily_limit: safeNumber(center.metadata?.limits?.dailyWithdrawal, 1000000),
+      monthly_limit: safeNumber(center.metadata?.limits?.monthlyWithdrawal, 10000000),
+      new_password: '',
+      confirm_password: '',
+    });
+    setLogoPreview(center.logo_url);
+  }, [center]);
 
   // 에이전시 목록 조회
   useEffect(() => {
@@ -162,7 +188,10 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
       // 로고 업로드
       const logoUrl = await uploadLogo();
 
-      // 업데이트할 데이터 준비
+      // 수수료율 계산
+      const newFeeRate = parseFloat(formData.fee_rate.toString());
+
+      // 업데이트할 데이터 준비 (users 테이블 - fee_rate 제거됨)
       const updateData: any = {
         center_name: formData.center_name,
         domain: formData.domain,
@@ -184,13 +213,88 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
         updateData.password_hash = formData.new_password;
       }
 
-      // 수수료율이 변경된 경우에만 이력 기록
+      // users 테이블 업데이트
+      const { error: usersError } = await supabase
+        .from('users')
+        .update(updateData)
+        .eq('user_id', center.user_id);
+
+      if (usersError) throw usersError;
+
+      // 수수료율 업데이트 (centers 테이블의 commission_rate)
       const oldFeeRate = center.fee_rate;
-      const newFeeRate = parseFloat(formData.fee_rate.toString());
       
       if (oldFeeRate !== newFeeRate) {
-        // fee_rate 업데이트 추가
-        updateData.fee_rate = newFeeRate;
+        console.log('🔍 센터 수수료율 변경 감지:', { oldFeeRate, newFeeRate });
+
+        // agency_id 조회 (parent_user_id가 있는 경우)
+        let agencyId = null;
+        if (formData.parent_user_id) {
+          const { data: agencyData, error: agencyError } = await supabase
+            .from('agencies')
+            .select('id')
+            .eq('user_id', formData.parent_user_id)
+            .maybeSingle();
+          
+          if (agencyData) {
+            agencyId = agencyData.id;
+            console.log('✅ 에이전시 정보 조회 성공:', agencyData);
+          } else {
+            console.log('⚠️ 에이전시 정보 조회 실패:', agencyError);
+            // agency_id가 없어도 계속 진행 (직속 마스터 센터인 경우)
+          }
+        }
+
+        // centers 테이블 레코드 존재 여부 확인
+        const { data: existingCenter } = await supabase
+          .from('centers')
+          .select('id')
+          .eq('user_id', center.user_id)
+          .maybeSingle();
+
+        if (existingCenter) {
+          // 기존 레코드가 있으면 UPDATE
+          const { error: centersError } = await supabase
+            .from('centers')
+            .update({ 
+              commission_rate: newFeeRate,
+              name: formData.center_name,
+              agency_id: agencyId, // agencies.id 사용
+              contact_email: center.email,
+              daily_limit: formData.daily_limit,
+              monthly_limit: formData.monthly_limit,
+              updated_at: new Date().toISOString()
+            })
+            .eq('user_id', center.user_id);
+
+          if (centersError) {
+            throw new Error('Centers 테이블 업데이트 실패: ' + centersError.message);
+          }
+        } else {
+          // 레코드가 없으면 INSERT (기존 센터의 경우)
+          const referralCode = center.email?.split('@')[0].toLowerCase() || center.username.toLowerCase();
+          const { error: centersInsertError } = await supabase
+            .from('centers')
+            .insert({
+              user_id: center.user_id,
+              name: formData.center_name,
+              code: referralCode,
+              agency_id: agencyId, // agencies.id 사용 (null 가능)
+              commission_rate: newFeeRate,
+              status: 'active',
+              operation_mode: 'production',
+              contact_email: center.email,
+              daily_limit: formData.daily_limit,
+              monthly_limit: formData.monthly_limit,
+              metadata: {},
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            });
+
+          if (centersInsertError) {
+            throw new Error('Centers 테이블 생성 실패: ' + centersInsertError.message);
+          }
+        }
         
         // 변경 이력 기록
         await recordFeeRateChange({
@@ -200,14 +304,6 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
           changedBy: user?.user_id || 'master'
         });
       }
-
-      // 센터 정보 업데이트
-      const { error } = await supabase
-        .from('users')
-        .update(updateData)
-        .eq('user_id', center.user_id);
-
-      if (error) throw error;
 
       toast.success(formData.new_password ? '센터 정보 및 비밀번호가 수정되었습니다' : '센터 정보가 수정되었습니다');
       
@@ -388,11 +484,11 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
               min="0"
               max="100"
               value={formData.fee_rate}
-              onChange={(e) => setFormData({ ...formData, fee_rate: parseFloat(e.target.value) })}
+              onChange={(e) => setFormData({ ...formData, fee_rate: safeNumber(e.target.value, 0) })}
               className="w-full bg-slate-800/50 border border-cyan-500/20 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
             />
             <p className="text-slate-500 text-xs mt-1">
-              현재: {formData.fee_rate}% (예: 0.2% = 거래당 0.2% 수수료)
+              현재: {formData.fee_rate.toFixed(1)}% (예: 0.2% = 거래당 0.2% 수수료)
             </p>
             
             {/* 수수료율 변경 이력 */}
@@ -417,12 +513,17 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
                           })}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {history.old_rate !== null && (
-                          <span className="text-slate-500">{history.old_rate}%</span>
-                        )}
-                        <span className="text-slate-500">→</span>
-                        <span className="text-cyan-400">{history.new_rate}%</span>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          {history.old_rate !== null && (
+                            <span className="text-slate-500">{history.old_rate}%</span>
+                          )}
+                          <span className="text-slate-500">→</span>
+                          <span className="text-cyan-400">{history.new_rate}%</span>
+                        </div>
+                        <span className="text-slate-500">
+                          변경자: {history.changed_by_name || history.changed_by}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -439,7 +540,7 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
                 type="number"
                 min="0"
                 value={formData.daily_limit}
-                onChange={(e) => setFormData({ ...formData, daily_limit: parseFloat(e.target.value) })}
+                onChange={(e) => setFormData({ ...formData, daily_limit: safeNumber(e.target.value, 1000000) })}
                 className="w-full bg-slate-800/50 border border-cyan-500/20 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
               />
               <p className="text-slate-500 text-xs mt-1">KRW 기준</p>
@@ -450,7 +551,7 @@ export function EditCenterModal({ center, onClose, onSuccess }: EditCenterModalP
                 type="number"
                 min="0"
                 value={formData.monthly_limit}
-                onChange={(e) => setFormData({ ...formData, monthly_limit: parseFloat(e.target.value) })}
+                onChange={(e) => setFormData({ ...formData, monthly_limit: safeNumber(e.target.value, 10000000) })}
                 className="w-full bg-slate-800/50 border border-cyan-500/20 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
               />
               <p className="text-slate-500 text-xs mt-1">KRW 기준</p>

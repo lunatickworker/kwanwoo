@@ -19,6 +19,16 @@ interface Transaction {
   created_at: string;
 }
 
+interface StoreStats {
+  store_id: string;
+  store_name: string;
+  username: string;
+  total_balance_krw: number;
+  user_count: number;
+  total_deposits_krw: number; // 오늘 입금액 추가
+  coin_balances: Array<{ symbol: string; balance: number; krw_value: number }>;
+}
+
 export function Dashboard() {
   const { user } = useAuth();
   const [stats, setStats] = useState({
@@ -42,6 +52,7 @@ export function Dashboard() {
   const [loading, setLoading] = useState(false); // 즉시 UI 표시
   const [filteredUserIds, setFilteredUserIds] = useState<string[]>([]); // 필터링된 사용자 ID 목록
   const [coinIcons, setCoinIcons] = useState<Map<string, string>>(new Map());
+  const [storeStats, setStoreStats] = useState<StoreStats[]>([]); // 센터용 가맹점 통계
 
   // 코인 아이콘 로드
   useEffect(() => {
@@ -88,7 +99,7 @@ export function Dashboard() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      channel.unsubscribe();
     };
   }, [user]);
 
@@ -103,7 +114,8 @@ export function Dashboard() {
         fetchTransactionStats(userIds),
         fetchRecentTransactions(userIds),
         fetchWalletStatus(userIds),
-        fetchCoinBalances(userIds)
+        fetchCoinBalances(userIds),
+        fetchStoreStats(userIds)
       ]);
     } catch (error) {
       console.error('Dashboard data fetch error:', error);
@@ -118,6 +130,12 @@ export function Dashboard() {
       const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
       const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
       
+      console.log('📊 Dashboard - 필터링된 사용자 조회:', {
+        role: user?.role,
+        email: user?.email,
+        userId: user?.id?.substring(0, 8)
+      });
+
       const response = await fetch(`${backendUrl}/api/admin/users`, {
         headers: {
           'Authorization': `Bearer ${anonKey}`,
@@ -151,6 +169,15 @@ export function Dashboard() {
       
       if (result.success && result.users) {
         const userIds = result.users.map((u: any) => u.user_id);
+        
+        console.log('✅ Dashboard - 필터링 결과:', {
+          role: user?.role,
+          totalUsers: result.users.length,
+          regularUsers: result.users.filter((u: any) => u.role === 'user').length,
+          stores: result.users.filter((u: any) => u.role === 'store').length,
+          centers: result.users.filter((u: any) => u.role === 'center').length
+        });
+        
         setFilteredUserIds(userIds);
         return userIds;
       } else {
@@ -218,23 +245,23 @@ export function Dashboard() {
     // 오늘 입금 (필터링된 사용자만)
     const { data: todayDepositsData } = await supabase
       .from('deposits')
-      .select('amount')
+      .select('krw_value')
       .in('user_id', userIds)
       .eq('status', 'confirmed')
       .gte('created_at', today.toISOString());
 
-    const todayDepositsTotal = todayDepositsData?.reduce((sum, d) => sum + Number(d.amount), 0) || 0;
+    const todayDepositsTotal = todayDepositsData?.reduce((sum, d) => sum + Number(d.krw_value || 0), 0) || 0;
 
     // 어제 입금 (필터링된 사용자만)
     const { data: yesterdayDepositsData } = await supabase
       .from('deposits')
-      .select('amount')
+      .select('krw_value')
       .in('user_id', userIds)
       .eq('status', 'confirmed')
       .gte('created_at', yesterday.toISOString())
       .lt('created_at', today.toISOString());
 
-    const yesterdayDepositsTotal = yesterdayDepositsData?.reduce((sum, d) => sum + Number(d.amount), 0) || 0;
+    const yesterdayDepositsTotal = yesterdayDepositsData?.reduce((sum, d) => sum + Number(d.krw_value || 0), 0) || 0;
 
     const depositChange = yesterdayDepositsTotal > 0
       ? ((todayDepositsTotal - yesterdayDepositsTotal) / yesterdayDepositsTotal * 100).toFixed(1)
@@ -248,7 +275,7 @@ export function Dashboard() {
       .in('status', ['completed', 'processing'])
       .gte('created_at', today.toISOString());
 
-    const todayWithdrawalsTotal = todayWithdrawalsData?.reduce((sum, w) => sum + Number(w.amount), 0) || 0;
+    const todayWithdrawalsTotal = todayWithdrawalsData?.reduce((sum, w) => sum + Number(w.amount || 0), 0) || 0;
 
     // 어제 출금 (필터링된 사용자만)
     const { data: yesterdayWithdrawalsData } = await supabase
@@ -259,7 +286,7 @@ export function Dashboard() {
       .gte('created_at', yesterday.toISOString())
       .lt('created_at', today.toISOString());
 
-    const yesterdayWithdrawalsTotal = yesterdayWithdrawalsData?.reduce((sum, w) => sum + Number(w.amount), 0) || 0;
+    const yesterdayWithdrawalsTotal = yesterdayWithdrawalsData?.reduce((sum, w) => sum + Number(w.amount || 0), 0) || 0;
 
     const withdrawalChange = yesterdayWithdrawalsTotal > 0
       ? ((todayWithdrawalsTotal - yesterdayWithdrawalsTotal) / yesterdayWithdrawalsTotal * 100).toFixed(1)
@@ -348,23 +375,41 @@ export function Dashboard() {
       return;
     }
 
+    // 코인 가격 정보 미리 가져오기
+    const { data: tokenPrices } = await supabase
+      .from('supported_tokens')
+      .select('symbol, price_krw');
+
+    const priceMap = new Map<string, number>();
+    tokenPrices?.forEach((token: any) => {
+      priceMap.set(token.symbol, Number(token.price_krw || 0));
+    });
+
     // Hot Wallet 잔액 (필터링된 사용자만)
     const { data: hotWallets } = await supabase
       .from('wallets')
-      .select('balance, user_id')
+      .select('balance, coin_type, user_id')
       .in('user_id', userIds)
       .eq('wallet_type', 'hot');
 
-    const hotWalletTotal = hotWallets?.reduce((sum, w) => sum + Number(w.balance), 0) || 0;
+    // Hot Wallet KRW 환산액 계산
+    const hotWalletTotal = hotWallets?.reduce((sum, w) => {
+      const priceKrw = priceMap.get(w.coin_type) || 0;
+      return sum + (Number(w.balance) * priceKrw);
+    }, 0) || 0;
 
     // Cold Wallet 잔액 (필터링된 사용자만)
     const { data: coldWallets } = await supabase
       .from('wallets')
-      .select('balance, user_id')
+      .select('balance, coin_type, user_id')
       .in('user_id', userIds)
       .eq('wallet_type', 'cold');
 
-    const coldWalletTotal = coldWallets?.reduce((sum, w) => sum + Number(w.balance), 0) || 0;
+    // Cold Wallet KRW 환산액 계산
+    const coldWalletTotal = coldWallets?.reduce((sum, w) => {
+      const priceKrw = priceMap.get(w.coin_type) || 0;
+      return sum + (Number(w.balance) * priceKrw);
+    }, 0) || 0;
 
     const total = hotWalletTotal + coldWalletTotal;
 
@@ -432,12 +477,132 @@ export function Dashboard() {
     setTotalAssetValue(totalValue);
   };
 
+  const fetchStoreStats = async (userIds: string[]) => {
+    // 센터 역할이 아니면 실행하지 않음
+    if (user?.role !== 'center' || userIds.length === 0) {
+      setStoreStats([]);
+      return;
+    }
+
+    try {
+      // 1. 센터 소속 가맹점 목록 가져오기
+      const { data: stores } = await supabase
+        .from('users')
+        .select('user_id, username, center_name')
+        .in('user_id', userIds)
+        .eq('role', 'store');
+
+      if (!stores || stores.length === 0) {
+        setStoreStats([]);
+        return;
+      }
+
+      // 2. 코인 가격 정보 미리 가져오기
+      const { data: tokenPrices } = await supabase
+        .from('supported_tokens')
+        .select('symbol, price_krw');
+
+      const priceMap = new Map<string, number>();
+      tokenPrices?.forEach((token: any) => {
+        priceMap.set(token.symbol, Number(token.price_krw || 0));
+      });
+
+      // 3. 각 가맹점별로 통계 계산
+      const statsPromises = stores.map(async (store) => {
+        // 가맹점 소속 사용자 수 (role='user')
+        const { count: userCount } = await supabase
+          .from('users')
+          .select('*', { count: 'exact', head: true })
+          .eq('parent_user_id', store.user_id)
+          .eq('role', 'user');
+
+        // 가맹점 소속 사용자들의 ID 가져오기
+        const { data: storeUsers } = await supabase
+          .from('users')
+          .select('user_id')
+          .eq('parent_user_id', store.user_id)
+          .eq('role', 'user');
+
+        const storeUserIds = [store.user_id, ...(storeUsers?.map(u => u.user_id) || [])];
+
+        // 가맹점 + 소속 사용자들의 지갑 잔액 조회
+        const { data: wallets } = await supabase
+          .from('wallets')
+          .select('coin_type, balance')
+          .in('user_id', storeUserIds);
+
+        // 코인별 잔액 합산 및 KRW 가치 계산
+        const coinBalanceMap = new Map<string, number>();
+        let totalBalanceKrw = 0;
+
+        wallets?.forEach((wallet: any) => {
+          const currentBalance = coinBalanceMap.get(wallet.coin_type) || 0;
+          coinBalanceMap.set(wallet.coin_type, currentBalance + Number(wallet.balance));
+        });
+
+        const coinBalances: Array<{ symbol: string; balance: number; krw_value: number }> = [];
+        coinBalanceMap.forEach((balance, symbol) => {
+          if (balance > 0) {
+            const priceKrw = priceMap.get(symbol) || 0;
+            const krwValue = balance * priceKrw;
+            coinBalances.push({ symbol, balance, krw_value: krwValue });
+            totalBalanceKrw += krwValue;
+          }
+        });
+
+        // KRW 가치 기준 내림차순 정렬
+        coinBalances.sort((a, b) => b.krw_value - a.krw_value);
+
+        // 오늘 입금액 계산
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const { data: todayDepositsData } = await supabase
+          .from('deposits')
+          .select('krw_value')
+          .in('user_id', storeUserIds)
+          .eq('status', 'confirmed')
+          .gte('created_at', today.toISOString());
+
+        const totalDepositsKrw = todayDepositsData?.reduce((sum, d) => sum + Number(d.krw_value || 0), 0) || 0;
+
+        return {
+          store_id: store.user_id,
+          store_name: store.center_name || store.username,
+          username: store.username,
+          total_balance_krw: totalBalanceKrw,
+          user_count: userCount || 0,
+          total_deposits_krw: totalDepositsKrw, // 오늘 입금액 추가
+          coin_balances: coinBalances
+        };
+      });
+
+      const stats = await Promise.all(statsPromises);
+      
+      // 총 잔액 기준 내림차순 정렬
+      stats.sort((a, b) => b.total_balance_krw - a.total_balance_krw);
+      
+      setStoreStats(stats);
+    } catch (error) {
+      console.error('Error fetching store stats:', error);
+      setStoreStats([]);
+    }
+  };
+
   const formatCurrency = (amount: number) => {
+    // Handle undefined, null, or NaN values
+    if (amount === undefined || amount === null || isNaN(amount)) {
+      return '₩0';
+    }
     // DB의 balance는 이미 원화 금액이므로 그대로 표시
     return `₩${amount.toLocaleString('ko-KR', { maximumFractionDigits: 0 })}`;
   };
 
   const formatAmount = (amount: number) => {
+    // Handle undefined, null, or NaN values
+    if (amount === undefined || amount === null || isNaN(amount)) {
+      return '0';
+    }
     if (amount >= 1000000000) {
       return `${(amount / 1000000000).toFixed(1)}B`;
     } else if (amount >= 1000000) {
@@ -600,7 +765,9 @@ export function Dashboard() {
         <NeonCard>
           <div className="flex items-center gap-2 mb-6">
             <Wallet className="w-5 h-5 text-cyan-400" />
-            <h3 className="text-slate-200">지갑 현황</h3>
+            <h3 className="text-slate-200">
+              {user?.role === 'center' ? '가맹점 총 지갑 현황' : '지갑 현황'}
+            </h3>
           </div>
 
           <div className="space-y-6">
@@ -642,111 +809,168 @@ export function Dashboard() {
       </div>
 
       {/* 코인 보유 현황 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <NeonCard>
-          <div className="flex items-center gap-2 mb-6">
-            <Coins className="w-5 h-5 text-cyan-400" />
-            <h3 className="text-slate-200">코인 보유 현황</h3>
-          </div>
-
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {coinBalances.length > 0 ? (
-              coinBalances.map((coin, index) => (
-                <div key={index} className="flex items-center justify-between p-3 rounded-lg bg-slate-800/30 border border-slate-700/50">
-                  <div className="flex items-center gap-3">
-                    {coinIcons.has(coin.symbol) ? (
-                      <img src={coinIcons.get(coin.symbol)} alt={coin.symbol} className="w-8 h-8 rounded-full" />
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-white text-xs">
-                        {coin.symbol.slice(0, 2)}
-                      </div>
-                    )}
-                    <div>
-                      <p className="text-slate-200 text-sm">{coin.symbol}</p>
-                      <p className="text-slate-500 text-xs">{formatAmount(coin.balance)}</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-cyan-400 text-sm">{formatCurrency(coin.usdValue)}</p>
-                    <p className="text-slate-500 text-xs">
-                      {totalAssetValue > 0 ? ((coin.usdValue / totalAssetValue) * 100).toFixed(1) : 0}%
-                    </p>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-8 text-slate-400">
-                <Coins className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                <p>코인 보유 내역이 없습니다</p>
-              </div>
-            )}
-          </div>
-
-          {coinBalances.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-700/50">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400 text-sm">총 자산 가치 (KRW)</span>
-                <span className="text-cyan-400">{formatCurrency(totalAssetValue)}</span>
-              </div>
+      {user?.role !== 'center' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <NeonCard>
+            <div className="flex items-center gap-2 mb-6">
+              <Coins className="w-5 h-5 text-cyan-400" />
+              <h3 className="text-slate-200">코인 보유 현황</h3>
             </div>
-          )}
-        </NeonCard>
 
-        {/* 자산 분포 차트 (상위 5개) */}
-        <NeonCard>
-          <div className="flex items-center gap-2 mb-6">
-            <TrendingUp className="w-5 h-5 text-cyan-400" />
-            <h3 className="text-slate-200">자산 분포 (Top 5)</h3>
-          </div>
-
-          <div className="space-y-4">
-            {coinBalances.slice(0, 5).map((coin, index) => {
-              const percentage = totalAssetValue > 0 ? (coin.usdValue / totalAssetValue) * 100 : 0;
-              const gradientColors = [
-                'from-cyan-500 to-blue-500',
-                'from-purple-500 to-pink-500',
-                'from-green-500 to-emerald-500',
-                'from-orange-500 to-red-500',
-                'from-amber-500 to-yellow-500'
-              ];
-              
-              return (
-                <div key={index}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {coinBalances.length > 0 ? (
+                coinBalances.map((coin, index) => (
+                  <div key={index} className="flex items-center justify-between p-3 rounded-lg bg-slate-800/30 border border-slate-700/50">
+                    <div className="flex items-center gap-3">
                       {coinIcons.has(coin.symbol) ? (
-                        <img src={coinIcons.get(coin.symbol)} alt={coin.symbol} className="w-6 h-6 rounded-full" />
+                        <img src={coinIcons.get(coin.symbol)} alt={coin.symbol} className="w-8 h-8 rounded-full" />
                       ) : (
-                        <div className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-white text-xs">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-white text-xs">
                           {coin.symbol.slice(0, 2)}
                         </div>
                       )}
-                      <span className="text-slate-300 text-sm">{coin.symbol}</span>
+                      <div>
+                        <p className="text-slate-200 text-sm">{coin.symbol}</p>
+                        <p className="text-slate-500 text-xs">{formatAmount(coin.balance)}</p>
+                      </div>
                     </div>
                     <div className="text-right">
-                      <span className="text-slate-200 text-sm">{formatCurrency(coin.usdValue)}</span>
-                      <span className="text-slate-500 text-xs ml-2">({percentage.toFixed(1)}%)</span>
+                      <p className="text-cyan-400 text-sm">{formatCurrency(coin.usdValue)}</p>
+                      <p className="text-slate-500 text-xs">
+                        {totalAssetValue > 0 ? ((coin.usdValue / totalAssetValue) * 100).toFixed(1) : 0}%
+                      </p>
                     </div>
                   </div>
-                  <div className="relative h-2 bg-slate-800 rounded-full overflow-hidden">
-                    <div
-                      className={`absolute inset-y-0 left-0 bg-gradient-to-r ${gradientColors[index % gradientColors.length]} rounded-full shadow-lg`}
-                      style={{ width: `${percentage}%` }}
-                    ></div>
-                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-slate-400">
+                  <Coins className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>코인 보유 내역이 없습니다</p>
                 </div>
-              );
-            })}
-            
-            {coinBalances.length === 0 && (
-              <div className="text-center py-8 text-slate-400">
-                <TrendingUp className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                <p>자산 분포 데이터가 없습니다</p>
+              )}
+            </div>
+
+            {coinBalances.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-700/50">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 text-sm">총 자산 가치 (KRW)</span>
+                  <span className="text-cyan-400">{formatCurrency(totalAssetValue)}</span>
+                </div>
               </div>
             )}
+          </NeonCard>
+
+          {/* 자산 분포 차트 (상위 5개) */}
+          <NeonCard>
+            <div className="flex items-center gap-2 mb-6">
+              <TrendingUp className="w-5 h-5 text-cyan-400" />
+              <h3 className="text-slate-200">자산 분포 (Top 5)</h3>
+            </div>
+
+            <div className="space-y-4">
+              {coinBalances.slice(0, 5).map((coin, index) => {
+                const percentage = totalAssetValue > 0 ? (coin.usdValue / totalAssetValue) * 100 : 0;
+                const gradientColors = [
+                  'from-cyan-500 to-blue-500',
+                  'from-purple-500 to-pink-500',
+                  'from-green-500 to-emerald-500',
+                  'from-orange-500 to-red-500',
+                  'from-amber-500 to-yellow-500'
+                ];
+                
+                return (
+                  <div key={index}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        {coinIcons.has(coin.symbol) ? (
+                          <img src={coinIcons.get(coin.symbol)} alt={coin.symbol} className="w-6 h-6 rounded-full" />
+                        ) : (
+                          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-white text-xs">
+                            {coin.symbol.slice(0, 2)}
+                          </div>
+                        )}
+                        <span className="text-slate-300 text-sm">{coin.symbol}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-200 text-sm">{formatCurrency(coin.usdValue)}</span>
+                        <span className="text-slate-500 text-xs ml-2">({percentage.toFixed(1)}%)</span>
+                      </div>
+                    </div>
+                    <div className="relative h-2 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className={`absolute inset-y-0 left-0 bg-gradient-to-r ${gradientColors[index % gradientColors.length]} rounded-full shadow-lg`}
+                        style={{ width: `${percentage}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                );
+              })}
+              
+              {coinBalances.length === 0 && (
+                <div className="text-center py-8 text-slate-400">
+                  <TrendingUp className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>자산 분포 데이터가 없습니다</p>
+                </div>
+              )}
+            </div>
+          </NeonCard>
+        </div>
+      )}
+
+      {/* 센터 전용: 가맹점별 통계 */}
+      {user?.role === 'center' && storeStats.length > 0 && (
+        <NeonCard>
+          <div className="flex items-center gap-2 mb-6">
+            <Users className="w-5 h-5 text-cyan-400" />
+            <h3 className="text-slate-200">가맹점 현황</h3>
+            <span className="text-slate-400 text-sm ml-2">({storeStats.length}개 가맹점)</span>
+          </div>
+
+          <div className="space-y-3">
+            {storeStats.map((store, index) => (
+              <div key={store.store_id} className="p-4 rounded-lg bg-slate-800/30 border border-slate-700/50 hover:border-purple-500/30 transition-all">
+                <div className="flex items-center justify-between">
+                  {/* 가맹점 번호와 이름 */}
+                  <div className="flex items-center gap-3 min-w-[180px]">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white text-sm font-bold">
+                      {index + 1}
+                    </div>
+                    <div>
+                      <p className="text-slate-200 text-sm font-medium">{store.store_name}</p>
+                      <p className="text-slate-500 text-xs">@{store.username}</p>
+                    </div>
+                  </div>
+
+                  {/* 보유코인 */}
+                  <div className="flex items-center gap-1 text-xs min-w-[200px]">
+                    <span className="text-slate-400">보유코인:</span>
+                    {store.coin_balances.length > 0 ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-300">{store.coin_balances[0].symbol} {formatAmount(store.coin_balances[0].balance)}</span>
+                        <span className="text-cyan-400">({formatCurrency(store.total_balance_krw)})</span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-500">없음</span>
+                    )}
+                  </div>
+
+                  {/* 보유회원 */}
+                  <div className="flex items-center gap-1 text-xs min-w-[100px]">
+                    <span className="text-slate-400">보유회원:</span>
+                    <span className="text-slate-300">{store.user_count}명</span>
+                  </div>
+
+                  {/* 입금액 */}
+                  <div className="flex items-center gap-1 text-xs min-w-[140px]">
+                    <span className="text-slate-400">오늘 입금액:</span>
+                    <span className="text-green-400">{formatCurrency(store.total_deposits_krw)}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </NeonCard>
-      </div>
+      )}
     </div>
   );
 }

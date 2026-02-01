@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { Save, RefreshCw, Shield, Bell, Database, Globe, AlertTriangle, Check, Zap } from "lucide-react";
+import { Save, RefreshCw, Shield, Bell, Database, Globe, AlertTriangle, Check, Zap, Settings2 } from "lucide-react";
 import { NeonCard } from "../NeonCard";
 import { supabase } from "../../utils/supabase/client";
 import { toast } from "sonner@2.0.3";
+import { CenterOperationModeSettings } from "./CenterOperationModeSettings";
 
 interface SystemSettings {
   // Biconomy 설정
@@ -69,7 +70,7 @@ export function SystemSettings() {
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'biconomy' | 'gas' | 'security' | 'transaction' | 'notification' | 'system'>('biconomy');
+  const [activeTab, setActiveTab] = useState<'biconomy' | 'gas' | 'security' | 'transaction' | 'notification' | 'system' | 'center_mode'>('biconomy');
 
   useEffect(() => {
     loadSettings();
@@ -141,6 +142,7 @@ export function SystemSettings() {
     { id: 'transaction', label: '거래', icon: Database },
     { id: 'notification', label: '알림', icon: Bell },
     { id: 'system', label: '시스템', icon: AlertTriangle },
+    { id: 'center_mode', label: '센터 운영모드', icon: Settings2 },
   ] as const;
 
   if (loading) {
@@ -159,32 +161,34 @@ export function SystemSettings() {
           <h2 className="text-cyan-400 mb-2">시스템 설정</h2>
           <p className="text-slate-400 text-sm">전역 시스템 설정 및 정책 관리</p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
-          >
-            <RefreshCw className="w-4 h-4" />
-            초기화
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {saving ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                저장 중...
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" />
-                저장
-              </>
-            )}
-          </button>
-        </div>
+        {activeTab !== 'center_mode' && (
+          <div className="flex gap-2">
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg transition-colors"
+            >
+              <RefreshCw className="w-4 h-4" />
+              초기화
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {saving ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  저장 중...
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  저장
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -210,6 +214,11 @@ export function SystemSettings() {
 
       {/* Content */}
       <div className="space-y-6">
+        {/* Center Operation Mode Settings */}
+        {activeTab === 'center_mode' && (
+          <CenterOperationModeSettings />
+        )}
+
         {/* Biconomy Settings */}
         {activeTab === 'biconomy' && (
           <NeonCard>

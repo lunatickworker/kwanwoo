@@ -8,7 +8,7 @@ import { supabase } from '../../utils/supabase/client';
 interface WalletDetailProps {
   wallets: WalletData[];
   transactions: Transaction[];
-  selectedCoin: CoinType;
+  selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
 }
 

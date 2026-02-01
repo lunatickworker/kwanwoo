@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { TrendingUp, DollarSign, Calendar, Search, ArrowUpDown, Store } from "lucide-react";
+import { TrendingUp, DollarSign, Calendar, Search, ArrowUpDown, Store, History } from "lucide-react";
 import { NeonCard } from "../NeonCard";
 import { StatCard } from "../StatCard";
 import { supabase } from "../../utils/supabase/client";
@@ -38,17 +38,163 @@ export function SettlementManagement() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "deposit" | "profit" | "fee">("deposit");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [isRealTimeUpdate, setIsRealTimeUpdate] = useState(false);
+  const [centerFeeRate, setCenterFeeRate] = useState<number>(0);
 
+  // 초기 로드 (화면 로딩 시에만)
   useEffect(() => {
     if (user) fetchSettlementData();
+  }, [user]);
+
+  // 날짜 변경 시 (로딩 없이 부드럽게 업데이트)
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        if (!user) return;
+        const dateObj = new Date(selectedDate);
+        const { start, end } = getDateRange(dateObj);
+        
+        console.log('[Center] 날짜 변경 시작:', selectedDate, { start, end });
+        
+        const storesWithHierarchy = await getStoresWithHierarchy(user.id);
+        console.log('[Center] 가맹점 계층 조회 완료:', storesWithHierarchy.length);
+        
+        if (storesWithHierarchy.length === 0) {
+          console.log('[Center] 가맹점 없음 - 빈 배열로 설정');
+          setSettlements([]);
+          setLastUpdated(new Date());
+          return;
+        }
+        
+        // 배치로 정산 데이터 조회
+        const storeStats = await getBatchSettlementStats(storesWithHierarchy, start, end);
+        console.log('[Center] 배치 정산 데이터 조회 완료:', storeStats.size);
+        
+        const settlementData: StoreSettlement[] = storesWithHierarchy.map(store => {
+          const stats = storeStats.get(store.center_id) || {
+            total_deposit: 0,
+            total_withdrawal: 0,
+            transaction_count: 0
+          };
+          const feeRate = store.fee_rate / 100;
+          const totalFee = stats.total_deposit * feeRate;
+          const netProfit = stats.total_deposit - totalFee;
+          return {
+            store_id: store.center_id,
+            store_name: store.center_name,
+            total_deposit: stats.total_deposit,
+            total_withdrawal: stats.total_withdrawal,
+            fee_rate: feeRate,
+            total_fee: totalFee,
+            net_profit: netProfit,
+            transaction_count: stats.transaction_count
+          };
+        });
+        
+        console.log('[Center] 최종 데이터 설정 완료:', settlementData.length, 'rows');
+        setSettlements(settlementData);
+        setLastUpdated(new Date());
+      } catch (error) {
+        console.error('[Center] 날짜 변경 실패:', error);
+        setSettlements([]);
+        setLastUpdated(new Date());
+      }
+    };
+    
+    loadData();
+  }, [selectedDate]);
+
+  // 실시간 업데이트 구독
+  useEffect(() => {
+    if (!user) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    // 오늘 날짜가 선택된 경우에만 실시간 구독 활성화
+    if (selectedDate !== today) {
+      return;
+    }
+
+    // 기존 채널 제거
+    supabase.removeChannel('center-settlement-deposits-realtime');
+    supabase.removeChannel('center-settlement-withdrawals-realtime');
+
+    // deposits 테이블의 변경사항 구독
+    const depositsChannel = supabase
+      .channel('center-settlement-deposits-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'deposits'
+        },
+        (payload) => {
+          console.log('입금 변경 감지:', payload);
+          setIsRealTimeUpdate(true);
+          
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    // withdrawals 테이블의 변경사항 구독
+    const withdrawalsChannel = supabase
+      .channel('center-settlement-withdrawals-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'withdrawals'
+        },
+        (payload) => {
+          console.log('출금 변경 감지:', payload);
+          setIsRealTimeUpdate(true);
+          
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    // 30초마다 자동 새로고침
+    const autoRefreshInterval = setInterval(() => {
+      fetchSettlementData(true);
+    }, 30000);
+
+    return () => {
+      depositsChannel.unsubscribe();
+      withdrawalsChannel.unsubscribe();
+      clearInterval(autoRefreshInterval);
+    };
   }, [selectedDate, user]);
 
-  const fetchSettlementData = async () => {
+  const fetchSettlementData = async (isAutoRefresh = false) => {
     try {
-      setLoading(true);
+      if (!isAutoRefresh) {
+        setLoading(true);
+      }
       if (!user) return;
 
       console.time('⏱️ 센터 정산 데이터 조회');
+
+      // Step 0: 센터 정보 조회 (수수료율)
+      const { data: centerData } = await supabase
+        .from('centers')
+        .select('commission_rate')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      
+      if (centerData) {
+        setCenterFeeRate(centerData.commission_rate || 0);
+      }
 
       // Step 1: 가맹점 및 계층 구조를 한 번에 조회 (최적화)
       console.time('1. 가맹점 계층 구조 조회');
@@ -94,9 +240,11 @@ export function SettlementManagement() {
       });
 
       setSettlements(settlementData);
+      setLastUpdated(new Date());
 
       // Step 4: 7일치 일일 데이터 조회 (배치 처리)
-      console.time('3. 7일치 일일 데이터 조회');
+      if (!isAutoRefresh) {
+        console.time('3. 7일치 일일 데이터 조회');
       const dateRanges = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date();
@@ -130,13 +278,16 @@ export function SettlementManagement() {
         };
       });
 
-      setDailySummaries(dailyData);
+        setDailySummaries(dailyData);
 
-      console.timeEnd('⏱️ 센터 정산 데이터 조회');
+        console.timeEnd('⏱️ 센터 정산 데이터 조회');
+      }
 
     } catch (error) {
       console.error('정산 데이터 조회 실패:', error);
-      toast.error('정산 데이터를 불러오는데 실패했습니다');
+      if (!isAutoRefresh) {
+        toast.error('정산 데이터를 불러오는데 실패했습니다');
+      }
     } finally {
       setLoading(false);
     }
@@ -165,13 +316,21 @@ export function SettlementManagement() {
   };
 
   const totalStats = useMemo(() => {
-    return settlements.reduce((acc, curr) => ({
+    const reduced = settlements.reduce((acc, curr) => ({
       total_deposit: acc.total_deposit + curr.total_deposit,
       total_fee: acc.total_fee + curr.total_fee,
       net_profit: acc.net_profit + curr.net_profit,
       transaction_count: acc.transaction_count + curr.transaction_count
     }), { total_deposit: 0, total_fee: 0, net_profit: 0, transaction_count: 0 });
-  }, [settlements]);
+    
+    // 마스터에게 지불할 수수료 = 총 입금액 * 센터 수수료율
+    const masterFee = reduced.total_deposit * (centerFeeRate / 100);
+    
+    return {
+      ...reduced,
+      master_fee: masterFee
+    };
+  }, [settlements, centerFeeRate]);
 
   const formatCurrency = (amount: number) => new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(amount);
 
@@ -182,16 +341,36 @@ export function SettlementManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-cyan-400 mb-2">정산 관리</h2>
-          <p className="text-slate-400 text-sm">가맹점별 수수료 및 순수익 관리</p>
+          <div className="flex items-center gap-3">
+            <p className="text-slate-400 text-sm">가맹점별 수수료 및 순수익 관리</p>
+            {selectedDate === new Date().toISOString().split('T')[0] && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/30 rounded-full">
+                <div className={`w-2 h-2 rounded-full bg-green-400 ${isRealTimeUpdate ? 'animate-ping' : 'animate-pulse'}`}></div>
+                <span className="text-green-400 text-xs">실시간 업데이트</span>
+              </div>
+            )}
+          </div>
+          <p className="text-slate-500 text-xs mt-1">
+            마지막 업데이트: {lastUpdated.toLocaleTimeString('ko-KR')}
+          </p>
         </div>
-        <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 text-sm focus:outline-none focus:border-cyan-500/50" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => fetchSettlementData()}
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-colors"
+            title="새로고침"
+          >
+            <History className="w-4 h-4" /> 새로고침
+          </button>
+          <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 text-sm focus:outline-none focus:border-cyan-500/50" />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="총 입금액" value={formatCurrency(totalStats.total_deposit)} change={`${totalStats.transaction_count}건`} trend="up" icon={DollarSign} color="cyan" />
-        <StatCard title="총 수수료" value={formatCurrency(totalStats.total_fee)} change="가맹점별 요율" trend="up" icon={DollarSign} color="amber" />
-        <StatCard title="순수익" value={formatCurrency(totalStats.net_profit)} change="수수료 제외" trend="up" icon={TrendingUp} color="green" />
-        <StatCard title="활성 가맹점" value={`${settlements.length}개`} change="정산 대상" trend="warning" icon={Store} color="purple" />
+        <StatCard title="가맹점 수수료" value={formatCurrency(totalStats.total_fee)} change="센터 수수료" trend="up" icon={DollarSign} color="amber" />
+        <StatCard title="마스터 수수료" value={formatCurrency(totalStats.master_fee)} change={`${centerFeeRate}% 요율`} trend="warning" icon={DollarSign} color="purple" />
+        <StatCard title="순수익" value={formatCurrency(totalStats.total_fee - totalStats.master_fee)} change="당일순수익" trend="up" icon={TrendingUp} color="green" />
       </div>
 
       <NeonCard>

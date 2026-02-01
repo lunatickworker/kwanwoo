@@ -43,7 +43,7 @@ export function UserApp() {
   const { user } = useAuth();
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [wallets, setWallets] = useState<WalletData[]>([]);
-  const [selectedCoin, setSelectedCoin] = useState<CoinType>('BTC');
+  const [selectedCoin, setSelectedCoin] = useState<CoinType | ''>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -232,3 +232,4 @@ export function UserApp() {
     </div>
   );
 }
+export default UserApp;

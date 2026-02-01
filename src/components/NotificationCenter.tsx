@@ -1,6 +1,7 @@
-import { Bell, X, Trash2, CheckCheck, UserPlus, FileCheck, ShoppingCart } from 'lucide-react';
+import { Bell, X, Trash2, CheckCheck, UserPlus, FileCheck, ShoppingCart, Volume2, VolumeX } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useNotifications } from '../hooks/useNotifications';
+import { useNotificationSound } from '../hooks/useNotificationSound';
 import { Notification } from '../utils/supabase/types';
 
 interface NotificationCenterProps {
@@ -11,8 +12,15 @@ interface NotificationCenterProps {
 
 export function NotificationCenter({ userId, isAdmin = false, categoryFilter = null }: NotificationCenterProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
   const panelRef = useRef<HTMLDivElement>(null);
   const { notifications, unreadCount, markAsRead, markAllAsRead, clearNotification } = useNotifications(userId, isAdmin);
+
+  // 알림 소리 훅 (관리자만)
+  const { isPlaying, stopSound } = useNotificationSound({
+    notifications,
+    enabled: isAdmin && soundEnabled,
+  });
 
   // 카테고리 필터 적용
   const filteredNotifications = categoryFilter 
@@ -97,22 +105,49 @@ export function NotificationCenter({ userId, isAdmin = false, categoryFilter = n
   return (
     <div className="relative" ref={panelRef}>
       {/* 알림 벨 버튼 */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 text-slate-400 hover:text-cyan-400 transition-all duration-200"
-        aria-label="알림"
-        style={{ filter: isOpen ? 'drop-shadow(0 0 5px rgba(6, 182, 212, 0.8))' : '' }}
-      >
-        <Bell className={`w-5 h-5 ${isOpen ? 'text-cyan-400' : ''}`} />
-        {filteredUnreadCount > 0 && (
-          <span 
-            className="absolute top-1 right-1 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-xs rounded-full flex items-center justify-center animate-pulse"
-            style={{ boxShadow: '0 0 10px rgba(239, 68, 68, 0.8)' }}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="relative p-2 text-slate-400 hover:text-cyan-400 transition-all duration-200"
+          aria-label="알림"
+          style={{ filter: isOpen ? 'drop-shadow(0 0 5px rgba(6, 182, 212, 0.8))' : '' }}
+        >
+          <Bell className={`w-5 h-5 ${isOpen ? 'text-cyan-400' : ''}`} />
+          {filteredUnreadCount > 0 && (
+            <span 
+              className="absolute top-1 right-1 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-xs rounded-full flex items-center justify-center animate-pulse"
+              style={{ boxShadow: '0 0 10px rgba(239, 68, 68, 0.8)' }}
+            >
+              {filteredUnreadCount > 99 ? '99+' : filteredUnreadCount}
+            </span>
+          )}
+        </button>
+
+        {/* 소리 on/off 버튼 (관리자만) */}
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setSoundEnabled(!soundEnabled);
+              if (soundEnabled) {
+                stopSound();
+              }
+            }}
+            className={`p-2 transition-all duration-200 ${
+              soundEnabled 
+                ? 'text-cyan-400 hover:text-cyan-300' 
+                : 'text-slate-500 hover:text-slate-400'
+            }`}
+            aria-label={soundEnabled ? '소리 끄기' : '소리 켜기'}
+            title={soundEnabled ? '알림 소리 끄기' : '알림 소리 켜기'}
           >
-            {filteredUnreadCount > 99 ? '99+' : filteredUnreadCount}
-          </span>
+            {soundEnabled ? (
+              <Volume2 className={`w-5 h-5 ${isPlaying ? 'animate-pulse' : ''}`} />
+            ) : (
+              <VolumeX className="w-5 h-5" />
+            )}
+          </button>
         )}
-      </button>
+      </div>
 
       {/* 알림 드롭다운 */}
       {isOpen && (

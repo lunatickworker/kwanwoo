@@ -225,6 +225,23 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     };
   }, [user?.id]);
 
+  // 트랜잭션 모니터 업데이트 이벤트 리스너
+  useEffect(() => {
+    const handleTransactionUpdate = (event: CustomEvent) => {
+      console.log('🔄 트랜잭션 업데이트 감지:', event.detail);
+      
+      // 페이지를 새로고침하여 최신 데이터 가져오기
+      // 부모 컴포넌트에서 wallets와 transactions를 다시 로드할 것으로 기대
+      window.location.reload();
+    };
+
+    window.addEventListener('transaction-updated', handleTransactionUpdate as EventListener);
+
+    return () => {
+      window.removeEventListener('transaction-updated', handleTransactionUpdate as EventListener);
+    };
+  }, []);
+
   // 구매 요청 취소
   const handleCancelRequest = async (requestId: string) => {
     try {
@@ -579,8 +596,16 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
                       <div className="flex items-center gap-2">
                         <div className="text-right">
                           <p className="text-white">
-                            +{request.amount.toLocaleString()} {request.coin_type}
+                            +{parseFloat(request.amount).toLocaleString(undefined, {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 8
+                            })} {request.coin_type}
                           </p>
+                          {request.krw_value && (
+                            <p className="text-cyan-400 text-xs">
+                              ₩{parseFloat(request.krw_value).toLocaleString()}원
+                            </p>
+                          )}
                           <span className={`text-xs px-2 py-0.5 rounded-full ${statusClass}`}>
                             {statusText}
                           </span>

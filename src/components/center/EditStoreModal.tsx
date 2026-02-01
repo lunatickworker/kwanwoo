@@ -12,6 +12,7 @@ interface StoreData {
   fee_rate: number;
   status: string;
   created_at: string;
+  parent_user_id?: string; // 센터 user_id
 }
 
 interface EditStoreModalProps {
@@ -24,7 +25,7 @@ export function EditStoreModal({ store, onClose, onSuccess }: EditStoreModalProp
   const { user } = useAuth();
   const [formData, setFormData] = useState({
     username: store.username,
-    fee_rate: store.fee_rate || 5,
+    fee_rate: store.fee_rate || 0,
     new_password: '',
     confirm_password: '',
   });
@@ -33,10 +34,32 @@ export function EditStoreModal({ store, onClose, onSuccess }: EditStoreModalProp
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [feeRateHistory, setFeeRateHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [currentFeeRate, setCurrentFeeRate] = useState<number>(store.fee_rate || 0);
 
   useEffect(() => {
+    // 모달 열릴 때 현재 수수료율 조회
+    fetchCurrentFeeRate();
     fetchFeeRateHistory();
-  }, []);
+  }, [store.user_id]);
+
+  const fetchCurrentFeeRate = async () => {
+    try {
+      const { data } = await supabase
+        .from('stores')
+        .select('commission_rate')
+        .eq('user_id', store.user_id)
+        .maybeSingle();
+      
+      const rate = data?.commission_rate || 0;
+      setCurrentFeeRate(rate);
+      setFormData(prev => ({
+        ...prev,
+        fee_rate: rate
+      }));
+    } catch (error) {
+      console.error('수수료율 조회 실패:', error);
+    }
+  };
 
   const fetchFeeRateHistory = async () => {
     try {
@@ -77,30 +100,48 @@ export function EditStoreModal({ store, onClose, onSuccess }: EditStoreModalProp
     try {
       setLoading(true);
 
-      // 1. 가맹점 정보 업데이트
+      // 1. 가맹점 정보 업데이트 (users 테이블)
       const updateData: any = {
         username: formData.username,
-        fee_rate: formData.fee_rate,
       };
 
-      // 비밀번호 변경 시
+      // 비밀번호 변경 시 - Backend API 사용
       if (formData.new_password) {
         updateData.password_hash = formData.new_password;
         
-        // Auth 비밀번호도 업데이트
+        // Backend API로 Auth 비밀번호 업데이트
         try {
-          const { error: authError } = await supabase.auth.admin.updateUserById(
-            store.user_id,
-            { password: formData.new_password }
-          );
+          const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
+          const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
           
-          if (authError) {
-            console.error('Auth 비밀번호 변경 실패:', authError);
+          const response = await fetch(`${backendUrl}/api/auth/change-password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${anonKey}`
+            },
+            body: JSON.stringify({
+              user_id: store.user_id,
+              new_password: formData.new_password
+            })
+          });
+
+          if (!response.ok) {
+            console.error('Auth 비밀번호 변경 실패');
             // Auth 업데이트 실패해도 계속 진행
           }
         } catch (authErr) {
           console.error('Auth 업데이트 오류:', authErr);
+          // 오류가 발생해도 계속 진행
         }
+      }
+
+      // 수수료율이 변경되었으면 users 테이블에도 업데이트
+      const oldFeeRate = store.fee_rate;
+      const newFeeRate = formData.fee_rate;
+      
+      if (oldFeeRate !== newFeeRate) {
+        updateData.fee_rate = newFeeRate;
       }
 
       const { error: updateError } = await supabase
@@ -110,12 +151,97 @@ export function EditStoreModal({ store, onClose, onSuccess }: EditStoreModalProp
 
       if (updateError) throw updateError;
 
-      // 2. 수수료율 변경 이력 기록 (변경된 경우)
-      if (formData.fee_rate !== store.fee_rate) {
+      // 2. 수수료율 변경 처리 (stores 테이블의 commission_rate)
+      if (oldFeeRate !== newFeeRate) {
+        console.log('🔍 수수료율 변경 감지:', { oldFeeRate, newFeeRate, userId: user?.id });
+
+        // 센터 정보 조회 방법 1: 현재 로그인한 사용자로 조회
+        let centerData = null;
+        
+        if (user?.id) {
+          const { data, error } = await supabase
+            .from('centers')
+            .select('id, user_id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+          
+          if (data) {
+            centerData = data;
+            console.log('✅ 센터 정보 조회 성공 (현재 사용자):', centerData);
+          } else {
+            console.log('⚠️ 현재 사용자로 센터 조회 실패:', error);
+          }
+        }
+
+        // 센터 정보 조회 방법 2: 가맹점의 parent_user_id로 조회
+        if (!centerData && store.parent_user_id) {
+          const { data, error } = await supabase
+            .from('centers')
+            .select('id, user_id')
+            .eq('user_id', store.parent_user_id)
+            .maybeSingle();
+          
+          if (data) {
+            centerData = data;
+            console.log('✅ 센터 정보 조회 성공 (parent_user_id):', centerData);
+          } else {
+            console.log('⚠️ parent_user_id로 센터 조회 실패:', error);
+          }
+        }
+
+        if (!centerData) {
+          throw new Error('센터 정보를 찾을 수 없습니다. centers 테이블에 레코드가 없습니다.');
+        }
+
+        // stores 테이블 레코드 존재 여부 확인
+        const { data: existingStore } = await supabase
+          .from('stores')
+          .select('id')
+          .eq('user_id', store.user_id)
+          .maybeSingle();
+
+        if (existingStore) {
+          // 기존 레코드가 있으면 UPDATE
+          const { error: storesError } = await supabase
+            .from('stores')
+            .update({ 
+              commission_rate: newFeeRate,
+              name: formData.username,
+              updated_at: new Date().toISOString()
+            })
+            .eq('user_id', store.user_id);
+
+          if (storesError) {
+            throw new Error('Stores 테이블 업데이트 실패: ' + storesError.message);
+          }
+        } else {
+          // 레코드가 없으면 INSERT (기존 가맹점의 경우)
+          const storeCode = store.email?.split('@')[0].toLowerCase() || store.username.toLowerCase();
+          const { error: storesInsertError } = await supabase
+            .from('stores')
+            .insert({
+              user_id: store.user_id,
+              name: formData.username,
+              code: storeCode,
+              center_id: centerData.id, // centers 테이블의 id 사용
+              commission_rate: newFeeRate,
+              status: 'active',
+              contact_email: store.email,
+              metadata: {},
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            });
+
+          if (storesInsertError) {
+            throw new Error('Stores 테이블 생성 실패: ' + storesInsertError.message);
+          }
+        }
+        
+        // 변경 이력 기록
         await recordFeeRateChange({
           centerId: store.user_id,
-          oldRate: store.fee_rate,
-          newRate: formData.fee_rate,
+          oldRate: oldFeeRate,
+          newRate: newFeeRate,
           changedBy: user?.id || 'system'
         });
       }
@@ -238,12 +364,17 @@ export function EditStoreModal({ store, onClose, onSuccess }: EditStoreModalProp
                           {new Date(record.changed_at).toLocaleString('ko-KR')}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500">
+                            {record.old_rate !== null ? `${record.old_rate}%` : '없음'}
+                          </span>
+                          <span className="text-slate-600">→</span>
+                          <span className="text-cyan-400">{record.new_rate}%</span>
+                        </div>
                         <span className="text-slate-500">
-                          {record.old_rate !== null ? `${record.old_rate}%` : '없음'}
+                          변경자: {record.changed_by_name || record.changed_by}
                         </span>
-                        <span className="text-slate-600">→</span>
-                        <span className="text-cyan-400">{record.new_rate}%</span>
                       </div>
                     </div>
                   ))}

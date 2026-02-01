@@ -50,30 +50,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const sessionPromise = supabase.auth.getSession();
       
       const savedUser = localStorage.getItem('user');
+      
+      // ✅ localStorage 데이터 검증
+      let validatedUser = null;
       if (savedUser) {
         try {
-          const parsedUser = JSON.parse(savedUser);
-          
-          // localStorage의 사용자 정보로 DB에서 최신 상태 확인
-          const { data: dbUser, error: dbError } = await supabase
-            .from('users')
-            .select('user_id, email, username, role, level, template_id, center_name, logo_url, status, is_active')
-            .eq('user_id', parsedUser.id)
-            .maybeSingle();
+          validatedUser = JSON.parse(savedUser);
+          // 필수 필드 확인
+          if (!validatedUser.id || !validatedUser.email || !validatedUser.role) {
+            console.warn('⚠️ Invalid cached user data, clearing:', validatedUser);
+            localStorage.removeItem('user');
+            validatedUser = null;
+          }
+        } catch (parseError) {
+          console.warn('❌ Failed to parse cached user:', parseError);
+          localStorage.removeItem('user');
+          validatedUser = null;
+        }
+      }
+      
+      if (validatedUser) {
+        try {
+          // DB에서 최신 정보 확인 (타임아웃: 8초)
+          const { data: dbUser, error: dbError } = await Promise.race([
+            supabase
+              .from('users')
+              .select('user_id, email, username, role, level, template_id, center_name, logo_url, status, is_active')
+              .eq('user_id', validatedUser.id)
+              .maybeSingle(),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('DB query timeout')), 8000)
+            ) as any
+          ]);
           
           if (dbUser) {
-            // 일반 회원 is_active 체크
+            // 일반 회원 is_active 체크만 함 (관리자는 is_active 관계없이 로그인 허용)
             if (dbUser.role === 'user' && !dbUser.is_active) {
               // 승인이 취소된 경우 로그아웃
-              localStorage.removeItem('user');
-              await supabase.auth.signOut();
-              setIsLoading(false);
-              return;
-            }
-            
-            // 관리자(센터, 가맹점, 에이전시) is_active 체크
-            if (['center', 'agency', 'store'].includes(dbUser.role) && !dbUser.is_active) {
-              // 비활성화된 경우 로그아웃
               localStorage.removeItem('user');
               await supabase.auth.signOut();
               setIsLoading(false);
@@ -101,11 +114,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           
           setIsLoading(false);
-        } catch (error) {
-          localStorage.removeItem('user');
+        } catch (error: any) {
+          // 타임아웃 또는 네트워크 에러: localStorage의 사용자 정보로 진행
+          const isTimeout = error?.message?.includes('timeout');
+          console.warn(`⏱️ DB 조회 실패 (${isTimeout ? '타임아웃' : '네트워크 에러'}) - 캐시 사용:`, error?.message);
+          console.log('📦 Using cached user:', validatedUser.email);
+          setUser(validatedUser);
           setIsLoading(false);
         }
       } else {
+        // 캐시된 사용자 정보 없음 → 빠르게 진행
         setIsLoading(false);
       }
 
@@ -115,6 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await handleOAuthLogin(session.user);
       }
     } catch (error) {
+      console.error('Auth session check error:', error);
       setIsLoading(false);
     }
   };
@@ -176,34 +195,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const metadataRole = authUser.user_metadata?.role;
       if (metadataRole && ['center', 'agency', 'store', 'admin', 'master'].includes(metadataRole)) {
         // 관리자 role인 경우 자동 삽입하지 않음 (센터 생성 API에서 처리)
-        setTimeout(async () => {
-          try {
-            const { data: adminUser } = await supabase
-              .from('users')
-              .select('user_id, email, username, role, level, template_id, center_name, logo_url, status')
-              .eq('user_id', authUser.id)
-              .maybeSingle();
-            
-            if (adminUser) {
-              const loggedInUser: User = {
-                id: adminUser.user_id,
-                email: adminUser.email,
-                username: adminUser.username,
-                role: adminUser.role || 'user',
-                level: adminUser.level,
-                templateId: adminUser.template_id,
-                centerName: adminUser.center_name,
-                logoUrl: adminUser.logo_url,
-              };
-              
-              setUser(loggedInUser);
-              localStorage.setItem('user', JSON.stringify(loggedInUser));
-            }
-          } catch (error) {
-            // Silent fail
-          }
-        }, 1000);
-        
+        // ⏱️ 1초 딜레이 후 DB에서 조회 (센터 생성 API 완료 대기)
+        try {
+          await new Promise<void>((resolve) => {
+            setTimeout(async () => {
+              try {
+                const { data: adminUser } = await supabase
+                  .from('users')
+                  .select('user_id, email, username, role, level, template_id, center_name, logo_url, status')
+                  .eq('user_id', authUser.id)
+                  .maybeSingle();
+                
+                if (adminUser) {
+                  const loggedInUser: User = {
+                    id: adminUser.user_id,
+                    email: adminUser.email,
+                    username: adminUser.username,
+                    role: adminUser.role || 'user',
+                    level: adminUser.level,
+                    templateId: adminUser.template_id,
+                    centerName: adminUser.center_name,
+                    logoUrl: adminUser.logo_url,
+                  };
+                  
+                  setUser(loggedInUser);
+                  localStorage.setItem('user', JSON.stringify(loggedInUser));
+                }
+              } catch (error) {
+                console.error('Admin user lookup failed:', error);
+              }
+              resolve();
+            }, 1000);
+          });
+        } catch (error) {
+          console.error('Admin user wait error:', error);
+        }
         return;
       }
       
@@ -322,10 +348,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             throw new Error('회원가입 승인 대기 중입니다. 관리자의 승인을 기다려주세요');
           }
 
-          // 관리자(센터, 가맹점, 에이전시) is_active 체크
-          if (['center', 'agency', 'store'].includes(userData.role) && !userData.is_active) {
-            throw new Error('시스템 관리자에게 문의하세요');
-          }
+          // 🔧 관리자는 is_active 체크 안 함 (관리자는 계정 생성 시 자동 활성화)
+          // if (['center', 'agency', 'store'].includes(userData.role) && !userData.is_active) {
+          //   throw new Error('시스템 관리자에게 문의하세요');
+          // }
 
           const loggedInUser: User = {
             id: userData.user_id,

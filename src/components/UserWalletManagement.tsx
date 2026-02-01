@@ -29,6 +29,7 @@ interface WalletData {
   balance: number;
   wallet_type?: string;
   created_at: string;
+  price_krw?: number; // 코인 가격 추가
 }
 
 interface CoinData {
@@ -104,6 +105,9 @@ export function UserWalletManagement() {
     isChecking: false,
     message: ''
   });
+
+  // 가맹점은 지갑 관리 탭 접근 불가
+  const isStore = user?.role === 'store';
 
   useEffect(() => {
     // 병렬로 데이터 로드
@@ -331,14 +335,31 @@ export function UserWalletManagement() {
   };
 
   const fetchUserWallets = async (userId: string) => {
-    const { data } = await supabase
+    // 지갑 정보와 코인 가격 정보를 함께 조회
+    const { data: wallets } = await supabase
       .from('wallets')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (data) {
-      setUserWallets(data);
+    if (wallets) {
+      // 코인 가격 정보 가져오기
+      const { data: tokenPrices } = await supabase
+        .from('supported_tokens')
+        .select('symbol, price_krw');
+
+      const priceMap = new Map<string, number>();
+      tokenPrices?.forEach((token: any) => {
+        priceMap.set(token.symbol, Number(token.price_krw || 0));
+      });
+
+      // 지갑 데이터에 price_krw 추가
+      const walletsWithPrice = wallets.map(wallet => ({
+        ...wallet,
+        price_krw: priceMap.get(wallet.coin_type) || 0
+      }));
+
+      setUserWallets(walletsWithPrice);
     }
   };
 
@@ -1209,19 +1230,22 @@ export function UserWalletManagement() {
                   >
                     사용자 정보
                   </button>
-                  <button
-                    onClick={() => setActiveTab("wallets")}
-                    className={`px-4 py-2 rounded-lg transition-all ${
-                      activeTab === "wallets"
-                        ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
-                        : 'text-slate-400 hover:text-slate-300'
-                    }`}
-                  >
-                    지갑 관리 ({userWallets.length})
-                  </button>
+                  {/* 가맹점은 지갑 관리 탭 숨김 */}
+                  {!isStore && (
+                    <button
+                      onClick={() => setActiveTab("wallets")}
+                      className={`px-4 py-2 rounded-lg transition-all ${
+                        activeTab === "wallets"
+                          ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
+                          : 'text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      지갑 관리 ({userWallets.length})
+                    </button>
+                  )}
                 </div>
 
-                {activeTab === "wallets" && (
+                {!isStore && activeTab === "wallets" && (
                   <button
                     onClick={handleAddCoins}
                     className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 transition-all border border-cyan-500/50"
@@ -1536,14 +1560,16 @@ export function UserWalletManagement() {
                           <p className="text-2xl text-cyan-400">{userWallets.length}</p>
                         </div>
                         <div>
-                          <p className="text-slate-400 text-sm mb-1">총 자산 가치</p>
-                          <p className="text-2xl text-green-400">
-                            ₩{userWallets.reduce((sum, w) => sum + w.balance, 0).toLocaleString()}
+                          <p className="text-slate-400 text-sm mb-1">토큰 코인 종류</p>
+                          <p className="text-2xl text-purple-400">
+                            {new Set(userWallets.map(w => w.coin_type)).size}
                           </p>
                         </div>
                         <div>
-                          <p className="text-slate-400 text-sm mb-1">보유 코인 종류</p>
-                          <p className="text-2xl text-purple-400">{userWallets.length}</p>
+                          <p className="text-slate-400 text-sm mb-1">환산 원화 가치</p>
+                          <p className="text-2xl text-green-400">
+                            ₩{userWallets.reduce((sum, w) => sum + (w.balance * (w.price_krw || 0)), 0).toLocaleString('ko-KR', { maximumFractionDigits: 0 })}
+                          </p>
                         </div>
                       </div>
                     </div>

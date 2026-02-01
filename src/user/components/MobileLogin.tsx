@@ -76,9 +76,9 @@ export function MobileLogin() {
         localStorage.removeItem('savedEmail');
       }
       
-      toast.success('로그인 성공! 환영합니다 🎉', {
-        position: 'top-center',
-      });
+      // toast.success('로그인 성공! 환영합니다 🎉', {
+      //   position: 'top-center',
+      // });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '로그인에 실패했습니다';
       

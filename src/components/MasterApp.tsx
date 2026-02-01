@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Building2, Settings, Globe, Users, TrendingUp, DollarSign, Coins, Zap, Shield } from "lucide-react";
 import { CenterManagementCompact } from "./master/CenterManagementCompact";
 import { MasterDashboard } from "./master/MasterDashboard";
@@ -15,6 +15,31 @@ import { toast } from "sonner@2.0.3";
 
 export function MasterApp() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
+
+  // URL 해시 변경 감지 및 탭 전환
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.slice(1); // # 제거
+      
+      // #master 또는 #master/ 인 경우 dashboard로 설정
+      if (hash === 'master' || hash === 'master/') {
+        setActiveTab('master/dashboard');
+        window.location.hash = '#master/dashboard';
+      } else if (hash && hash.startsWith('master/')) {
+        setActiveTab(hash);
+      }
+    };
+
+    // 초기 로드 시 해시 확인
+    handleHashChange();
+
+    // 해시 변경 이벤트 리스너
+    window.addEventListener('hashchange', handleHashChange);
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+    };
+  }, []);
 
   const handleLogoClick = async () => {
     try {
@@ -72,12 +97,17 @@ export function MasterApp() {
             <nav className="space-y-2">
               {menuItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = activeTab === item.id;
+                // activeTab이 master/dashboard 형식일 수 있으므로 id 부분만 비교
+                const isActive = activeTab === item.id || activeTab.endsWith(`/${item.id}`);
                 
                 return (
                   <button
                     key={item.id}
-                    onClick={() => setActiveTab(item.id)}
+                    onClick={() => {
+                      // Hash 기반 네비게이션으로 변경
+                      window.location.hash = `#master/${item.id}`;
+                      setActiveTab(`master/${item.id}`);
+                    }}
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${
                       isActive
                         ? "bg-cyan-500/20 border border-cyan-500/50 shadow-lg shadow-cyan-500/20 text-cyan-400"
@@ -100,18 +130,20 @@ export function MasterApp() {
           
           {/* Content Area */}
           <main className="flex-1 overflow-y-auto p-6">
-            {activeTab === "dashboard" && <MasterDashboard onNavigate={setActiveTab} />}
-            {activeTab === "centers" && <CenterManagementCompact />}
-            {activeTab === "domains" && <DomainManagement />}
-            {activeTab === "agencies" && <AgencyManagementCompact />}
-            {activeTab === "settlement" && <SettlementManagement />}
-            {activeTab === "coins" && <CoinManagement />}
-            {activeTab === "gas-policy" && <GasPolicyManagement />}
-            {activeTab === "security" && <SecurityMonitor />}
-            {activeTab === "settings" && <SystemSettings />}
+            {(activeTab === "dashboard" || activeTab === "master/dashboard") && <MasterDashboard onNavigate={setActiveTab} />}
+            {(activeTab === "centers" || activeTab === "master/centers") && <CenterManagementCompact />}
+            {(activeTab === "domains" || activeTab === "master/domains") && <DomainManagement />}
+            {(activeTab === "agencies" || activeTab === "master/agencies") && <AgencyManagementCompact />}
+            {(activeTab === "settlement" || activeTab === "master/settlement") && <SettlementManagement />}
+            {(activeTab === "coins" || activeTab === "master/coins") && <CoinManagement />}
+            {(activeTab === "gas-policy" || activeTab === "master/gas-policy") && <GasPolicyManagement />}
+            {(activeTab === "security" || activeTab === "master/security") && <SecurityMonitor />}
+            {(activeTab === "settings" || activeTab === "master/settings") && <SystemSettings />}
           </main>
         </div>
       </div>
     </div>
   );
 }
+
+export default MasterApp;

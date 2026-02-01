@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { TrendingUp, DollarSign, Calendar, Search, ArrowUpDown, Eye } from "lucide-react";
+import { TrendingUp, DollarSign, Calendar, Search, ArrowUpDown, Eye, History } from "lucide-react";
 import { NeonCard } from "../NeonCard";
 import { supabase } from "../../utils/supabase/client";
 import { useAuth } from "../../contexts/AuthContext";
@@ -36,22 +36,144 @@ export function SettlementManagement() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "deposit" | "profit" | "fee">("deposit");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [isRealTimeUpdate, setIsRealTimeUpdate] = useState(false);
 
+  // 초기 로드 (화면 로딩 시에만)
   useEffect(() => {
     if (user) fetchSettlementData();
+  }, [user]);
+
+  // 날짜 변경 시 (로딩 없이 부드럽게 업데이트)
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        if (!user) return;
+        const dateObj = new Date(selectedDate);
+        const { start, end } = getDateRange(dateObj);
+        
+        console.log('[Agency] 날짜 변경 시작:', selectedDate, { start, end });
+        
+        const centerIds = await getChildUserIds(user.id);
+        console.log('[Agency] 센터 ID 조회 완료:', centerIds);
+        
+        if (!centerIds || centerIds.length === 0) {
+          console.log('[Agency] 센터 없음 - 빈 배열로 설정');
+          setSettlements([]);
+          setLastUpdated(new Date());
+          return;
+        }
+        
+        // 각 센터별로 정산 데이터 조회
+        const settlementPromises = centerIds.map(async (centerId) => {
+          const stats = await getSettlementStats([centerId], start, end);
+          return { centerId, stats };
+        });
+        
+        const settlementResults = await Promise.all(settlementPromises);
+        console.log('[Agency] 정산 데이터 조회 완료:', settlementResults.length);
+        
+        const settlementData: CenterSettlement[] = settlementResults.map(({ centerId, stats }) => {
+          const feeRate = (stats.fee_rate || 0.02);
+          const totalFee = stats.total_deposit * feeRate;
+          const netProfit = stats.total_deposit - totalFee;
+          return {
+            center_id: centerId,
+            center_name: stats.center_name || centerId,
+            total_deposit: stats.total_deposit,
+            total_withdrawal: stats.total_withdrawal,
+            fee_rate: feeRate,
+            total_fee: totalFee,
+            net_profit: netProfit,
+            transaction_count: stats.transaction_count
+          };
+        });
+        
+        console.log('[Agency] 최종 데이터 설정 완료:', settlementData.length, 'rows');
+        setSettlements(settlementData);
+        setLastUpdated(new Date());
+      } catch (error) {
+        console.error('[Agency] 날짜 변경 실패:', error);
+        setSettlements([]);
+        setLastUpdated(new Date());
+      }
+    };
+    
+    loadData();
+  }, [selectedDate]);
+
+  // 실시간 업데이트 구독
+  useEffect(() => {
+    if (!user) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    if (selectedDate !== today) {
+      return;
+    }
+
+    const depositsChannel = supabase
+      .channel('agency-settlement-deposits-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'deposits'
+        },
+        (payload) => {
+          setIsRealTimeUpdate(true);
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    const withdrawalsChannel = supabase
+      .channel('agency-settlement-withdrawals-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'withdrawals'
+        },
+        (payload) => {
+          setIsRealTimeUpdate(true);
+          setTimeout(() => {
+            fetchSettlementData(true);
+            setIsRealTimeUpdate(false);
+          }, 500);
+        }
+      )
+      .subscribe();
+
+    const autoRefreshInterval = setInterval(() => {
+      fetchSettlementData(true);
+    }, 30000);
+
+    return () => {
+      supabase.removeChannel(depositsChannel);
+      supabase.removeChannel(withdrawalsChannel);
+      clearInterval(autoRefreshInterval);
+    };
   }, [selectedDate, user]);
 
-  const fetchSettlementData = async () => {
+  const fetchSettlementData = async (isAutoRefresh = false) => {
     try {
-      setLoading(true);
+      if (!isAutoRefresh) {
+        setLoading(true);
+      }
       if (!user) return;
 
+      // 센터 목록 조회
       const { data: centers, error: centersError } = await supabase
-        .from('users')
-        .select('user_id, center_name, username, fee_rate')
-        .eq('role', 'center')
-        .eq('parent_user_id', user.id)
-        .eq('is_active', true);
+        .from('centers')
+        .select('id, name, user_id, commission_rate')
+        .eq('agency_id', (await supabase.from('agencies').select('id').eq('user_id', user.id).single()).data?.id)
+        .order('created_at', { ascending: false });
 
       if (centersError) throw centersError;
 
@@ -61,13 +183,13 @@ export function SettlementManagement() {
       const settlementData = await Promise.all((centers || []).map(async (center) => {
         const userIds = await getChildUserIds(center.user_id);
         const stats = await getSettlementStats(userIds, start, end);
-        const feeRate = (center.fee_rate || 3.0) / 100;
+        const feeRate = (center.commission_rate || 0.2) / 100;
         const totalFee = stats.total_deposit * feeRate;
         const netProfit = stats.total_deposit - totalFee;
 
         return {
           center_id: center.user_id,
-          center_name: center.center_name || center.username,
+          center_name: center.name,
           total_deposit: stats.total_deposit,
           total_withdrawal: stats.total_withdrawal,
           fee_rate: feeRate,
@@ -93,7 +215,7 @@ export function SettlementManagement() {
           const centerIds = await getChildUserIds(center.user_id);
           const stats = await getSettlementStats(centerIds, dStart, dEnd);
           dayTotalDeposit += stats.total_deposit;
-          dayTotalFee += stats.total_deposit * ((center.fee_rate || 3.0) / 100);
+          dayTotalFee += stats.total_deposit * ((center.commission_rate || 0.2) / 100);
         }
 
         dailyData.push({
@@ -103,10 +225,16 @@ export function SettlementManagement() {
           net_profit: dayTotalDeposit - dayTotalFee
         });
       }
-      setDailySummaries(dailyData);
+      
+      if (!isAutoRefresh) {
+        setDailySummaries(dailyData);
+      }
+      setLastUpdated(new Date());
     } catch (error) {
       console.error('정산 데이터 조회 실패:', error);
-      toast.error('정산 데이터를 불러오는데 실패했습니다');
+      if (!isAutoRefresh) {
+        toast.error('정산 데이터를 불러오는데 실패했습니다');
+      }
     } finally {
       setLoading(false);
     }
@@ -152,9 +280,29 @@ export function SettlementManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-cyan-400 mb-2">정산 관리</h2>
-          <p className="text-slate-400 text-sm">센터별 수수료 및 순수익 조회 (읽기 전용)</p>
+          <div className="flex items-center gap-3">
+            <p className="text-slate-400 text-sm">센터별 수수료 및 순수익 조회 (읽기 전용)</p>
+            {selectedDate === new Date().toISOString().split('T')[0] && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/30 rounded-full">
+                <div className={`w-2 h-2 rounded-full bg-green-400 ${isRealTimeUpdate ? 'animate-ping' : 'animate-pulse'}`}></div>
+                <span className="text-green-400 text-xs">실시간 업데이트</span>
+              </div>
+            )}
+          </div>
+          <p className="text-slate-500 text-xs mt-1">
+            마지막 업데이트: {lastUpdated.toLocaleTimeString('ko-KR')}
+          </p>
         </div>
-        <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 text-sm focus:outline-none focus:border-cyan-500/50" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => fetchSettlementData()}
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-colors"
+            title="새로고침"
+          >
+            <History className="w-4 h-4" /> 새로고침
+          </button>
+          <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-300 text-sm focus:outline-none focus:border-cyan-500/50" />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

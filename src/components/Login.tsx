@@ -19,7 +19,7 @@ export function Login({ onLoginSuccess }: LoginProps) {
 
     try {
       const user = await login(email, password, true);
-      toast.success('로그인 성공');
+      // toast.success('로그인 성공');
       
       if (user.role === 'master') {
         window.location.hash = '#master';
@@ -126,3 +126,5 @@ export function Login({ onLoginSuccess }: LoginProps) {
     </div>
   );
 }
+
+export default Login;

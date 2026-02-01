@@ -53,22 +53,21 @@ export async function getChildUserIds(parentId: string): Promise<string[]> {
  */
 export async function getAllCentersWithHierarchy(): Promise<CenterWithHierarchy[]> {
   try {
-    // 1. 모든 활성 센터 조회
+    // 1. 모든 활성 센터 조회 (centers 테이블에서)
     const { data: centers } = await supabase
-      .from('users')
-      .select('user_id, center_name, username, fee_rate')
-      .eq('role', 'center')
-      .eq('is_active', true);
+      .from('centers')
+      .select('id, name, user_id, commission_rate, status')
+      .eq('status', 'active');
 
     if (!centers || centers.length === 0) return [];
 
-    const centerIds = centers.map(c => c.user_id);
+    const centerUserIds = centers.map(c => c.user_id).filter(Boolean);
 
     // 2. 첫 번째 레벨 하위 유저 조회 (가맹점)
     const { data: firstLevel } = await supabase
       .from('users')
       .select('user_id, parent_user_id')
-      .in('parent_user_id', centerIds);
+      .in('parent_user_id', centerUserIds);
 
     const firstLevelIds = (firstLevel || []).map(u => u.user_id);
 
@@ -94,8 +93,8 @@ export async function getAllCentersWithHierarchy(): Promise<CenterWithHierarchy[
 
       return {
         center_id: center.user_id,
-        center_name: center.center_name || center.username,
-        fee_rate: center.fee_rate || 3.0,
+        center_name: center.name,
+        fee_rate: center.commission_rate || 0.2,
         child_user_ids: [center.user_id, ...directChildren, ...grandChildren]
       };
     });
@@ -125,9 +124,9 @@ export async function getBatchSettlementStats(
     const [depositsResult, withdrawalsResult] = await Promise.all([
       supabase
         .from('deposits')
-        .select('user_id, amount')
+        .select('user_id, krw_value')
         .in('user_id', allUserIds)
-        .eq('status', 'confirmed')
+        .in('status', ['confirmed', 'completed'])
         .gte('created_at', startDate)
         .lte('created_at', endDate),
       supabase
@@ -144,7 +143,7 @@ export async function getBatchSettlementStats(
 
     (depositsResult.data || []).forEach(d => {
       const current = userStats.get(d.user_id) || { deposits: 0, withdrawals: 0, count: 0 };
-      current.deposits += Number(d.amount);
+      current.deposits += Number(d.krw_value);
       current.count += 1;
       userStats.set(d.user_id, current);
     });
@@ -192,25 +191,33 @@ export async function getBatchSettlementStats(
  */
 export async function getStoresWithHierarchy(centerId: string): Promise<CenterWithHierarchy[]> {
   try {
-    // 1. 센터의 모든 활성 가맹점 조회
+    // 1. 센터 정보 조회
+    const { data: center } = await supabase
+      .from('centers')
+      .select('id, user_id')
+      .eq('user_id', centerId)
+      .single();
+
+    if (!center) return [];
+
+    // 2. 센터의 모든 활성 가맹점 조회 (stores 테이블에서)
     const { data: stores } = await supabase
-      .from('users')
-      .select('user_id, center_name, username, fee_rate')
-      .eq('role', 'store')
-      .eq('parent_user_id', centerId)
-      .eq('is_active', true);
+      .from('stores')
+      .select('id, name, user_id, commission_rate, status')
+      .eq('center_id', center.id)
+      .eq('status', 'active');
 
     if (!stores || stores.length === 0) return [];
 
-    const storeIds = stores.map(s => s.user_id);
+    const storeUserIds = stores.map(s => s.user_id).filter(Boolean);
 
-    // 2. 모든 가맹점의 회원을 한 번에 조회
+    // 3. 모든 가맹점의 회원을 한 번에 조회
     const { data: members } = await supabase
       .from('users')
       .select('user_id, parent_user_id')
-      .in('parent_user_id', storeIds);
+      .in('parent_user_id', storeUserIds);
 
-    // 3. 가맹점별로 하위 유저 ID 그룹핑
+    // 4. 가맹점별로 하위 유저 ID 그룹핑
     const storeHierarchy = stores.map(store => {
       const storeMembers = (members || [])
         .filter(m => m.parent_user_id === store.user_id)
@@ -218,8 +225,8 @@ export async function getStoresWithHierarchy(centerId: string): Promise<CenterWi
 
       return {
         center_id: store.user_id,
-        center_name: store.center_name || store.username,
-        fee_rate: store.fee_rate || 2.5,
+        center_name: store.name,
+        fee_rate: store.commission_rate || 2.0,
         child_user_ids: [store.user_id, ...storeMembers]
       };
     });
@@ -253,9 +260,9 @@ export async function getBatchDailyStats(
     const [depositsResult, withdrawalsResult] = await Promise.all([
       supabase
         .from('deposits')
-        .select('user_id, amount, created_at')
+        .select('user_id, krw_value, created_at')
         .in('user_id', allUserIds)
-        .eq('status', 'confirmed')
+        .in('status', ['confirmed', 'completed'])
         .gte('created_at', overallStart)
         .lte('created_at', overallEnd),
       supabase
@@ -278,7 +285,7 @@ export async function getBatchDailyStats(
       // 해당 날짜 범위의 입금 집계
       (depositsResult.data || []).forEach(d => {
         if (d.created_at >= start && d.created_at <= end) {
-          total_deposit += Number(d.amount);
+          total_deposit += Number(d.krw_value);
           transaction_count += 1;
         }
       });
@@ -317,13 +324,13 @@ export async function getSettlementStats(
     // 1. 입금 집계
     const { data: deposits } = await supabase
       .from('deposits')
-      .select('amount')
+      .select('krw_value')
       .in('user_id', userIds)
-      .eq('status', 'confirmed')
+      .in('status', ['confirmed', 'completed'])
       .gte('created_at', startDate)
       .lte('created_at', endDate);
 
-    const total_deposit = deposits?.reduce((sum, d) => sum + Number(d.amount), 0) || 0;
+    const total_deposit = deposits?.reduce((sum, d) => sum + Number(d.krw_value), 0) || 0;
 
     // 2. 출금 집계
     const { data: withdrawals } = await supabase

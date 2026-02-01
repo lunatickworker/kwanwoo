@@ -5,6 +5,7 @@
 
   export default defineConfig({
     plugins: [react()],
+    assetsInclude: ['**/*.WMA', '**/*.wma'],
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {
@@ -108,7 +109,7 @@
     sourcemap: false,
   },
   server: {
-    port: 3000,
+    port: 3001,
     open: true,
   },
 });

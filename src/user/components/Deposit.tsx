@@ -7,7 +7,7 @@ import { toast } from 'sonner@2.0.3';
 
 interface DepositProps {
   wallets: WalletData[];
-  selectedCoin: CoinType;
+  selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
   onSelectCoin: (coin: CoinType) => void;
 }
