@@ -8,6 +8,7 @@ import { getHierarchyUserIds } from "../utils/api/query-helpers";
 import { getCenterOperationMode, sendProductionTransaction, generateDevTxHash } from "../utils/blockchain/centerModeHelper";
 import { estimateGas } from "../utils/blockchain/transaction";
 import { approveTransferRequest, approveCoinSale } from "../utils/depositApprovalHelper";
+import { useBlockchainSync } from "../hooks/useBlockchainSync";
 
 interface TransferRequest {
   request_id: string;
@@ -96,6 +97,14 @@ export function DepositWithdrawalManagement() {
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
   const [coinSales, setCoinSales] = useState<CoinSaleRequest[]>([]);
+  const { startMonitoring } = useBlockchainSync({
+    onSuccess: () => {
+      console.log('✅ 승인 후 블록체인 동기화 완료');
+    },
+    onTimeout: () => {
+      console.log('⏱️ 승인 후 동기화 타임아웃');
+    }
+  });
   
   // 가맹점 계정은 기본 탭을 "deposits"로 설정
   const initialTab = user?.role === 'store' ? 'deposits' : 'transfer_requests';
@@ -593,6 +602,8 @@ export function DepositWithdrawalManagement() {
 
       if (result.success) {
         toast.success(`승인되었습니다. 가스비 지원: ${gasSponsorEnabled ? '활성화 (TRX 위임됨)' : '비활성화'}`);
+        console.log('🚀 코인 구매 승인 후 블록체인 동기화 시작');
+        startMonitoring();
         setSelectedRequest(null);
         setAdminNote('');
         setGasEstimate(null);
@@ -632,6 +643,9 @@ export function DepositWithdrawalManagement() {
       });
 
       if (result.success) {
+        toast.success('코인 판매가 승인되었습니다');
+        console.log('🚀 코인 판매 승인 후 블록체인 동기화 시작');
+        startMonitoring();
         setSelectedCoinSale(null);
         setAdminNote('');
         setGasSponsorEnabled(true); // 기본값으로 리셋

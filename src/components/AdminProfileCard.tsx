@@ -4,6 +4,7 @@ import { supabase } from '../utils/supabase/client';
 import { toast } from 'sonner@2.0.3';
 import { useAuth } from '../contexts/AuthContext';
 import { CoinSaleRequest } from './CoinSaleRequest';
+import { useBlockchainSync } from '../hooks/useBlockchainSync';
 
 interface WalletInfo {
   wallet_id: string;
@@ -32,6 +33,14 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null);
   const [showCoinSaleRequest, setShowCoinSaleRequest] = useState(false);
+  const { startMonitoring } = useBlockchainSync({
+    onSuccess: () => {
+      console.log('✅ 프로필 잔액 동기화 완료');
+    },
+    onTimeout: () => {
+      console.log('⏱️ 프로필 동기화 타임아웃');
+    }
+  });
 
   // 주소 복사 함수
   const copyAddress = async (address: string, e: React.MouseEvent) => {
@@ -66,6 +75,9 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
   };
 
   useEffect(() => {
+    console.log('🎴 프로필카드 열림 - 블록체인 동기화 시작');
+    startMonitoring();
+    
     fetchWallets();
     fetchSupportedCoins();
     

@@ -4,6 +4,7 @@ import { getCoinRateSync, preloadCoinRates } from '../utils/helpers';
 import { toast } from 'sonner@2.0.3';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../utils/supabase/client';
+import { useBlockchainSync } from '../../hooks/useBlockchainSync';
 
 interface WalletDetailProps {
   wallets: WalletData[];
@@ -16,6 +17,20 @@ export function WalletDetail({ wallets, transactions, selectedCoin, onNavigate }
   const wallet = wallets.find(w => w.coin_type === selectedCoin);
   const [coinRate, setCoinRate] = useState(0);
   const [coinIcon, setCoinIcon] = useState<string | null>(null);
+  const { startMonitoring, isMonitoring } = useBlockchainSync({
+    onSuccess: () => {
+      console.log('✅ 지갑 잔액 동기화 완료');
+    },
+    onTimeout: () => {
+      console.log('⏱️ 지갑 동기화 타임아웃');
+    }
+  });
+  
+  // 지갑페이지 열 때 블록체인 동기화 시작
+  useEffect(() => {
+    console.log('📄 지갑페이지 열림 - 블록체인 동기화 시작');
+    startMonitoring();
+  }, [selectedCoin, startMonitoring]);
   
   // 코인 아이콘 로드
   useEffect(() => {

@@ -3,15 +3,5 @@
   "outputDirectory": "dist",
   "env": {
     "VITE_MINIFY": "true"
-  },
-  "crons": [
-    {
-      "path": "/make-server-b6d5667f/scan-blockchain",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/make-server-b6d5667f/monitor-transactions",
-      "schedule": "* * * * *"
-    }
-  ]
+  }
 }
