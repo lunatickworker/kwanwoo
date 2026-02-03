@@ -1,4 +1,3 @@
-import { Wallet } from 'lucide-react';
 import { Screen } from '../App';
 import { NotificationCenter } from '../../components/NotificationCenter';
 import { useAuth } from '../../contexts/AuthContext';
@@ -33,17 +32,6 @@ export function TopBar({ currentScreen }: TopBarProps) {
     <div className="sticky top-0 bg-slate-900/95 backdrop-blur-xl border-b border-cyan-500/20 p-4 z-10" style={{ zIndex: 9999 }}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button 
-            onClick={() => {
-              window.location.hash = '#admin/login';
-            }}
-            className="w-8 h-8 rounded-lg bg-slate-800 border border-cyan-500/50 flex items-center justify-center hover:border-cyan-400 transition-all active:scale-95"
-            style={{
-              boxShadow: '0 0 10px rgba(6, 182, 212, 0.3), inset 0 0 10px rgba(6, 182, 212, 0.1)'
-            }}
-          >
-            <Wallet className="w-5 h-5 text-cyan-400" style={{ filter: 'drop-shadow(0 0 2px rgba(6, 182, 212, 0.8))' }} />
-          </button>
           <span className="text-white">{getTitle()}</span>
         </div>
         
