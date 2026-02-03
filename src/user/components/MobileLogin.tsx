@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Activity, Mail, Lock, LogIn, Eye, EyeOff, Sparkles, X, Users } from 'lucide-react';
+import { Activity, Mail, Lock, LogIn, Eye, EyeOff, Sparkles, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { supabase } from '../../utils/supabase/client';
@@ -537,17 +537,6 @@ export function MobileLogin() {
                 회원가입
               </button>
             </p>
-          </div>
-
-          {/* Admin Login Link */}
-          <div className="mt-3 text-center">
-            <button 
-              onClick={() => window.location.hash = '#admin/login'}
-              className="text-slate-500 hover:text-slate-300 transition-colors text-xs flex items-center justify-center gap-1.5 mx-auto"
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>관리자 로그인</span>
-            </button>
           </div>
 
           {/* Security Badge */}
