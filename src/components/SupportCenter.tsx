@@ -23,6 +23,7 @@ interface UserChat {
   user_id: string;
   username: string;
   email: string;
+  storeName?: string; // 소속 가맹점 명
   lastMessage: string;
   lastMessageTime: string;
   unreadCount: number;
@@ -62,13 +63,30 @@ export function SupportCenter() {
         // 3. users 테이블에서 사용자 정보 가져오기
         const { data: usersData } = await supabase
           .from('users')
-          .select('user_id, username, email')
+          .select('user_id, username, email, parent_user_id')
           .in('user_id', uniqueUserIds);
 
         // 4. user_id를 키로 하는 Map 생성
         const usersMap = new Map(
           usersData?.map(u => [u.user_id, u]) || []
         );
+
+        // 4-1. 가맹점 정보 조회 (parent_user_id 기반)
+        const parentUserIds = usersData
+          ?.filter((u: any) => u.parent_user_id)
+          .map((u: any) => u.parent_user_id) || [];
+        
+        const storeMap = new Map<string, string>();
+        if (parentUserIds.length > 0) {
+          const { data: storesData } = await supabase
+            .from('users')
+            .select('user_id, username, center_name')
+            .in('user_id', parentUserIds);
+          
+          storesData?.forEach((store: any) => {
+            storeMap.set(store.user_id, store.center_name || store.username || 'Unknown Store');
+          });
+        }
 
         // 5. 사용자별로 그룹화
         const chatMap = new Map<string, UserChat>();
@@ -87,11 +105,17 @@ export function SupportCenter() {
             const displayName = userData?.email 
               ? userData.email.split('@')[0] 
               : userData?.username || 'Unknown';
+            
+            // 소속 가맹점 명 조회
+            const storeName = userData?.parent_user_id 
+              ? storeMap.get(userData.parent_user_id) 
+              : undefined;
 
             chatMap.set(userId, {
               user_id: userId,
               username: displayName,
               email: userData?.email || '',
+              storeName: storeName,
               lastMessage: msg.message,
               lastMessageTime: msg.created_at,
               unreadCount
@@ -320,7 +344,12 @@ export function SupportCenter() {
                   className="w-full p-4 hover:bg-slate-700/30 transition-colors text-left"
                 >
                   <div className="flex items-start justify-between mb-1">
-                    <span className="text-white">{chat.username}</span>
+                    <div>
+                      <span className="text-white">{chat.username}</span>
+                      {chat.storeName && (
+                        <p className="text-slate-400 text-xs">소속: {chat.storeName}</p>
+                      )}
+                    </div>
                     {chat.unreadCount > 0 && (
                       <span className="bg-cyan-500 text-white text-xs px-2 py-0.5 rounded-full">
                         {chat.unreadCount}
@@ -365,6 +394,9 @@ export function SupportCenter() {
                 <div>
                   <h3 className="text-white">{selectedUser?.username}</h3>
                   <p className="text-slate-400 text-sm">{selectedUser?.email}</p>
+                  {selectedUser?.storeName && (
+                    <p className="text-slate-500 text-xs mt-1">📍 소속: {selectedUser.storeName}</p>
+                  )}
                 </div>
                 <button
                   onClick={() => setSelectedUserId(null)}
