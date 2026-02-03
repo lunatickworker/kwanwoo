@@ -11,6 +11,7 @@ import { Header } from "./Header";
 import { Dashboard } from "./Dashboard";
 import { DepositWithdrawalManagement } from "./DepositWithdrawalManagement";
 import { StoreManagement } from "./StoreManagement";
+import StakingManagement from "./admin/StakingManagement";
 import { SettlementManagement as CenterSettlement } from "./center/SettlementManagement";
 import { SettlementManagement as AgencySettlement } from "./agency/SettlementManagement";
 import { SettlementManagement as StoreSettlement } from "./store/SettlementManagement";
@@ -116,6 +117,7 @@ export function AdminApp() {
             {(activeTab === "gas-policy" || activeTab === "admin/gas-policy") && <GasSponsorshipPolicy />}
             {(activeTab === "deposit-withdrawal" || activeTab === "admin/deposit-withdrawal") && <DepositWithdrawalManagement />}
             {(activeTab === "swaps" || activeTab === "admin/swaps") && <SwapManagement />}
+            {(activeTab === "staking" || activeTab === "admin/staking") && <StakingManagement centerId={user?.id} />}
             {(activeTab === "settlement" || activeTab === "admin/settlement") && (
               user?.role === 'agency' ? <AgencySettlement /> : 
               user?.role === 'store' ? <StoreSettlement /> : 

@@ -1,4 +1,4 @@
-import { LayoutDashboard, Users, Receipt, TrendingUp, DollarSign, Coins, Zap, Shield, MessageCircle, Settings, Home, Repeat, Store, User, Activity } from "lucide-react";
+import { LayoutDashboard, Users, Receipt, TrendingUp, DollarSign, Coins, Zap, Shield, MessageCircle, Settings, Home, Repeat, Store, User, Activity, Lock } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
 interface SidebarProps {
@@ -17,6 +17,7 @@ export function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
     { id: "account-verifications", label: "계좌인증 관리", icon: Shield },
     { id: "deposit-withdrawal", label: "입출금 관리", icon: Receipt },
     { id: "swaps", label: "스왑 관리", icon: Repeat },
+    { id: "staking", label: "TRX 스테이킹", icon: Lock },
     { id: "settlement", label: "정산 관리", icon: DollarSign },
     { id: "support-center", label: "고객센터", icon: MessageCircle },
   ];

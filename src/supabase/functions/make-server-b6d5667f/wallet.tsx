@@ -277,15 +277,41 @@ walletRouter.post('/create', async (c) => {
     }
 
     // 1. 지갑 생성
-    console.log(`🔐 ${coin_type} 지갑 생성 시작...`);
-    const { address, privateKey } = await createWalletByCoinType(coin_type);
-    const resolvedAddress = typeof address === 'string' 
-      ? address 
-      : await address;
+    console.log(`🔐 [${coin_type}] 지갱 생성 시작...`);
+    
+    // ✅ STEP 1: 사용자의 기존 지갱 확인
+    console.log(`🔍 ${user_id}의 기존 지갱 확인 중...`);
+    const { data: existingWallets, error: queryError } = await supabase
+      .from('wallets')
+      .select('address, encrypted_private_key')
+      .eq('user_id', user_id)
+      .limit(1);
 
-    // 2. Private Key 암호화
-    console.log('🔒 Private Key 암호화 중...');
-    const encryptedPrivateKey = await encryptPrivateKey(privateKey);
+    if (queryError) {
+      console.error('❌ 기존 지갱 조회 실패:', queryError);
+    }
+
+    let address: string;
+    let encryptedPrivateKey: string;
+
+    if (existingWallets && existingWallets.length > 0) {
+      // ✅ 기존 지갱이 있으면 재사용
+      console.log(`♻️ 기존 주소 발견: ${existingWallets[0].address}`);
+      address = existingWallets[0].address;
+      encryptedPrivateKey = existingWallets[0].encrypted_private_key;
+    } else {
+      // ✅ 없으면 새로운 주소 생성
+      console.log(`🆕 [${coin_type}] 새로운 주소 생성`);
+      
+      const { address: newAddress, privateKey } = await createWalletByCoinType(coin_type);
+      address = typeof newAddress === 'string' ? newAddress : await newAddress;
+      
+      // 2. Private Key 암호화
+      console.log('🔒 Private Key 암호화 중...');
+      encryptedPrivateKey = await encryptPrivateKey(privateKey);
+      
+      console.log(`✨ 새 주소 생성 완료: ${address}`);
+    }
 
     // 3. DB 저장
     console.log('💾 DB 저장 중...');
@@ -294,7 +320,7 @@ walletRouter.post('/create', async (c) => {
       .insert({
         user_id,
         coin_type,
-        address: resolvedAddress,
+        address,
         encrypted_private_key: encryptedPrivateKey,
         wallet_type,
         balance: 0,
@@ -304,11 +330,36 @@ walletRouter.post('/create', async (c) => {
       .single();
 
     if (insertError) {
+      // UNIQUE 제약 위반 → 이미 존재하는 지갱
+      if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
+        console.log(`⚠️ [${coin_type}] 지갱이 이미 존재합니다. 기존 지갱을 반환합니다.`);
+        
+        // 기존 지갱 조회
+        const { data: existingWallets2, error: queryErr } = await supabase
+          .from('wallets')
+          .select('wallet_id, address, coin_type, wallet_type')
+          .eq('user_id', user_id)
+          .eq('coin_type', coin_type)
+          .eq('wallet_type', wallet_type);
+        
+        if (!queryErr && existingWallets2 && existingWallets2.length > 0) {
+          const existingWallet = existingWallets2[0];
+          console.log(`✅ 기존 지갱 반환: ${existingWallet.wallet_id}`);
+          return c.json({
+            success: true,
+            wallet: existingWallet,
+            message: `${coin_type} ${wallet_type} 지갱이 이미 존재합니다`
+          });
+        } else {
+          console.error(`⚠️ 기존 지갱 조회 실패:`, queryErr);
+        }
+      }
+      
       console.error('❌ DB 저장 실패:', insertError);
       throw insertError;
     }
 
-    console.log(`✅ ${coin_type} 지갑 생성 완료: ${resolvedAddress}`);
+    console.log(`✅ [${coin_type}] 지갱 생성 완료: ${address}`);
 
     // 4. 응답 (Private Key는 절대 반환하지 않음!)
     return c.json({
@@ -331,7 +382,12 @@ walletRouter.post('/create', async (c) => {
 
 /**
  * POST /wallet/create-batch
- * 여러 코인 지갑을 한 번에 생성
+ * 여러 코인 지갑을 한 번에 생성 (같은 주소 공유)
+ * 
+ * 동작:
+ * - 사용자의 기존 지갱이 있으면: 그 주소 재사용
+ * - 없으면: 새로운 주소 생성
+ * - 배열의 모든 코인: 같은 주소 사용
  */
 walletRouter.post('/create-batch', async (c) => {
   try {
@@ -345,28 +401,63 @@ walletRouter.post('/create-batch', async (c) => {
       }, 400);
     }
 
-    console.log(`🔐 ${coin_types.length}개 지갑 일괄 생성 시작...`);
+    console.log(`🔐 ${coin_types.length}개 지갑 일괄 생성 시작 (같은 주소 사용)...`);
     const wallets = [];
     const errors = [];
+    let sharedAddress: string | null = null; // 모든 지갑이 공유할 주소
+    let sharedEncryptedPrivateKey: string | null = null; // 공유할 암호화된 Private Key
+
+    // ✅ STEP 1: 사용자의 기존 지갱 확인
+    console.log(`🔍 ${user_id}의 기존 지갱 확인 중...`);
+    const { data: existingWallets, error: queryError } = await supabase
+      .from('wallets')
+      .select('address, encrypted_private_key')
+      .eq('user_id', user_id)
+      .limit(1);
+
+    if (queryError) {
+      console.error('❌ 기존 지갱 조회 실패:', queryError);
+    } else if (existingWallets && existingWallets.length > 0) {
+      // ✅ 기존 지갱이 있으면 재사용
+      sharedAddress = existingWallets[0].address;
+      sharedEncryptedPrivateKey = existingWallets[0].encrypted_private_key;
+      console.log(`♻️ 기존 주소 발견: ${sharedAddress}`);
+    }
 
     for (const coin_type of coin_types) {
       try {
-        // 1. 지갑 생성
-        const { address, privateKey } = await createWalletByCoinType(coin_type);
-        const resolvedAddress = typeof address === 'string' 
-          ? address 
-          : await address;
+        let address: string;
+        let encryptedPrivateKey: string | null;
 
-        // 2. Private Key 암호화
-        const encryptedPrivateKey = await encryptPrivateKey(privateKey);
+        if (sharedAddress === null) {
+          // ✅ STEP 2: 첫 번째 지갱 - 새로운 주소 생성
+          console.log(`🆕 [${coin_type}] 새로운 주소 생성 (첫 지갱)`);
+          
+          const { address: newAddress, privateKey } = await createWalletByCoinType(coin_type);
+          address = typeof newAddress === 'string' ? newAddress : await newAddress;
+          
+          // Private Key 암호화
+          encryptedPrivateKey = await encryptPrivateKey(privateKey);
+          
+          // 공유 주소 및 Private Key 저장
+          sharedAddress = address;
+          sharedEncryptedPrivateKey = encryptedPrivateKey;
+          
+          console.log(`✨ 새 주소 생성 완료: ${address}`);
+        } else {
+          // ✅ STEP 3: 두 번째 이후 - 기존 주소 재사용
+          console.log(`♻️ [${coin_type}] 기존 주소 재사용: ${sharedAddress}`);
+          address = sharedAddress;
+          encryptedPrivateKey = sharedEncryptedPrivateKey;
+        }
 
-        // 3. DB 저장
+        // ✅ STEP 4: DB 저장
         const { data: walletData, error: insertError } = await supabase
           .from('wallets')
           .insert({
             user_id,
             coin_type,
-            address: resolvedAddress,
+            address, // 공유 주소
             encrypted_private_key: encryptedPrivateKey,
             wallet_type,
             balance: 0,
@@ -375,7 +466,37 @@ walletRouter.post('/create-batch', async (c) => {
           .select()
           .single();
 
-        if (insertError) throw insertError;
+        if (insertError) {
+          // UNIQUE 제약 위반 → 이미 존재하는 지갱
+          if (insertError.code === '23505' || insertError.message?.includes('duplicate')) {
+            console.log(`⚠️ [${coin_type}] 지갱이 이미 존재합니다. 기존 지갱을 사용합니다.`);
+            
+            // 기존 지갱 조회
+            const { data: existingWallets2 } = await supabase
+              .from('wallets')
+              .select('wallet_id, address, coin_type, wallet_type')
+              .eq('user_id', user_id)
+              .eq('coin_type', coin_type)
+              .eq('wallet_type', wallet_type);
+            
+            if (existingWallets2 && existingWallets2.length > 0) {
+              const existingWallet = existingWallets2[0];
+              wallets.push({
+                wallet_id: existingWallet.wallet_id,
+                address: existingWallet.address,
+                coin_type: existingWallet.coin_type
+              });
+              console.log(`✅ ${coin_type} 지갱(기존): ${existingWallet.address}`);
+              continue; // 다음 coin_type으로
+            } else {
+              console.error(`⚠️ ${coin_type} 기존 지갱 조회 실패`);
+            }
+          }
+          
+          console.error(`❌ ${coin_type} 지갱 생성 실패:`, insertError);
+          errors.push({ coin_type, error: insertError.message });
+          continue;
+        }
 
         wallets.push({
           wallet_id: walletData.wallet_id,
@@ -383,7 +504,7 @@ walletRouter.post('/create-batch', async (c) => {
           coin_type: walletData.coin_type
         });
 
-        console.log(`✅ ${coin_type} 지갑 생성: ${resolvedAddress}`);
+        console.log(`✅ ${coin_type} 지갑 생성 완료: ${address}`);
       } catch (error: any) {
         console.error(`❌ ${coin_type} 지갑 생성 실패:`, error);
         errors.push({ coin_type, error: error.message });
@@ -391,6 +512,7 @@ walletRouter.post('/create-batch', async (c) => {
     }
 
     console.log(`✅ 일괄 생성 완료: ${wallets.length}/${coin_types.length}개 성공`);
+    console.log(`📍 공유 주소: ${sharedAddress}`);
 
     return c.json({
       success: true,
@@ -399,7 +521,8 @@ walletRouter.post('/create-batch', async (c) => {
       summary: {
         total: coin_types.length,
         succeeded: wallets.length,
-        failed: errors.length
+        failed: errors.length,
+        sharedAddress // 디버깅용
       }
     });
   } catch (error: any) {

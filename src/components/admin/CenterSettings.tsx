@@ -10,6 +10,7 @@ import { ColorPicker } from './ColorPicker';
 import { TemplateSelector } from './TemplateSelector';
 import { LogoUploader } from './LogoUploader';
 import { LivePreview } from './LivePreview';
+import StakingManagement from './StakingManagement';
 import { TEMPLATE_PRESETS } from '@/utils/template-presets';
 import { supabase } from '@/utils/supabase/client';
 import { toast } from 'sonner@2.0.3';
@@ -186,11 +187,12 @@ export function CenterSettings({ centerId }: CenterSettingsProps) {
 
       {/* 설정 탭 */}
       <Tabs defaultValue="basic" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="basic">기본 정보</TabsTrigger>
           <TabsTrigger value="template">템플릿</TabsTrigger>
           <TabsTrigger value="colors">색상</TabsTrigger>
           <TabsTrigger value="preview">미리보기</TabsTrigger>
+          <TabsTrigger value="staking">🔒 스테이킹</TabsTrigger>
         </TabsList>
 
         {/* 기본 정보 탭 */}
@@ -385,6 +387,14 @@ export function CenterSettings({ centerId }: CenterSettingsProps) {
               centerName={centerName || '센터 이름'}
             />
           </Card>
+        </TabsContent>
+
+        {/* 스테이킹 탭 */}
+        <TabsContent value="staking" className="space-y-6">
+          <StakingManagement 
+            centerId={centerId}
+            centerAddress={domain} // 지갑 주소를 domain으로 사용
+          />
         </TabsContent>
       </Tabs>
     </div>

@@ -74,13 +74,14 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
     try {
       setIsLoading(true);
       
-      // 1. 지갑 정보 조회
+      // 1. 지갱 정보 조회 (status 필터링 제거)
       const { data: walletsData, error: walletsError } = await supabase
         .from('wallets')
-        .select('wallet_id, coin_type, balance, address, wallet_type, created_at')
+        .select('*')
         .eq('user_id', user.id)
-        .eq('status', 'active')
         .order('created_at', { ascending: false });
+
+      console.log('📊 fetchWallets 결과:', { walletsData, walletsError, userId: user.id });
 
       if (walletsError) throw walletsError;
 
@@ -112,6 +113,7 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
         };
       }) || [];
 
+      console.log('💾 최종 포맷팅된 지갱 리스트:', formattedWallets);
       setWallets(formattedWallets);
     } catch (error: any) {
       console.error('지갑 조회 오류:', error);
@@ -150,27 +152,14 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
     setIsCreating(true);
 
     try {
-      // 중복 체크
-      const { data: existingWallet } = await supabase
-        .from('wallets')
-        .select('wallet_id')
-        .eq('user_id', user.id)
-        .eq('coin_type', selectedCoinType)
-        .eq('wallet_type', selectedWalletType)
-        .single();
-
-      if (existingWallet) {
-        toast.error(`이미 ${selectedCoinType} ${selectedWalletType === 'hot' ? 'Hot' : 'Cold'} 지갑이 존재합니다`);
-        return;
-      }
-
+      // ✅ 중복 체크는 백엔드에서 처리 (같은 주소 재사용)
       // Biconomy를 통한 지갑 생성
       const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
       const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
 
       toast.info('지갑 생성 중...');
 
-      const response = await fetch(`${backendUrl}/wallet/create`, {
+      const response = await fetch(`${backendUrl}/wallet/create-batch`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,22 +167,23 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
         },
         body: JSON.stringify({
           user_id: user.id,
-          coin_type: selectedCoinType,
+          coin_types: [selectedCoinType],
           wallet_type: selectedWalletType
         })
       });
 
       const result = await response.json();
 
-      if (!response.ok || !result.success) {
+      if (!result.success) {
         throw new Error(result.error || '지갑 생성에 실패했습니다');
       }
 
+      console.log('✅ 지갱 생성 성공:', result);
       toast.success(`${selectedCoinType} ${selectedWalletType === 'hot' ? 'Hot' : 'Cold'} 지갑이 생성되었습니다!`);
       setShowAddWallet(false);
       setSelectedCoinType('');
       setSelectedWalletType('hot');
-      fetchWallets();
+      await fetchWallets();
 
     } catch (error: any) {
       console.error('지갑 생성 오류:', error);

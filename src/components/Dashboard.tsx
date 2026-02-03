@@ -2,6 +2,7 @@ import { TrendingUp, TrendingDown, Users, AlertTriangle, Wallet, Activity, Coins
 import { NeonCard } from "./NeonCard";
 import { StatCard } from "./StatCard";
 import { CryptoPriceTicker } from "./CryptoPriceTicker";
+import { StakingCard } from "./center/StakingCard";
 import { useState, useEffect } from "react";
 import { supabase } from "../utils/supabase/client";
 import { useAuth } from "../contexts/AuthContext";
@@ -688,19 +689,17 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-cyan-400 mb-1">시스템 대시보드</h2>
-        <p className="text-slate-400 text-sm">실시간 운영 현황 모니터링</p>
-      </div>
-
       {/* 실시간 암호화폐 시세 */}
       <CryptoPriceTicker />
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         {statsCards.map((stat, index) => (
           <StatCard key={index} {...stat} />
         ))}
+        {user?.role === 'center' && (
+          <StakingCard centerId={user.id} />
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

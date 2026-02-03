@@ -20,6 +20,7 @@ const SOUND_MAP: Record<string, string> = {
   'signup': SOUND_PATHS.newUserApproved,
   'deposit': SOUND_PATHS.depositCompleted,
   'store_deposit': SOUND_PATHS.storeApply,
+  'store_coin_sale_request': SOUND_PATHS.storeApply,
 };
 
 interface UseNotificationSoundProps {

@@ -5,6 +5,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { ethers } from "npm:ethers@6.13.4";
 import walletRouter from "./wallet.tsx";
 import transactionRouter from "./transaction.tsx";
+import stakingRouter from "./staking-routes.tsx";
+import transactionFeeRouter from "./transaction-fee-routes.tsx";
 
 // Deno Deploy 호환 bcrypt (Web Crypto API 사용)
 const bcrypt = {
@@ -93,15 +95,19 @@ async function getBiconomyStatus(txHash: string): Promise<any> {
 }
 
 /**
- * Processing 상태의 입금 트랜잭션 체크 및 업데이트
+ * Confirmed 상태의 입금 트랜잭션 체크 및 업데이트
  */
 async function checkDeposits() {
+  console.log('🔍 checkDeposits() 함수 시작');
   const { data: deposits, error } = await supabase
     .from('deposits')
-    .select('*, coins(rpc_url, chain_id)')
-    .eq('status', 'processing')
+    .select('*')
+    .eq('status', 'confirmed')
+    .eq('wallet_updated', false)  // 아직 지갑에 반영되지 않은 것만
     .order('created_at', { ascending: false })
     .limit(50);
+  
+  console.log('📋 조회된 deposits:', deposits?.length || 0, '개', error ? `에러: ${error.message}` : '');
 
   if (error || !deposits || deposits.length === 0) {
     return { checked: 0, updated: 0 };
@@ -111,145 +117,42 @@ async function checkDeposits() {
 
   for (const deposit of deposits) {
     try {
-      const txHash = deposit.tx_hash;
-      if (!txHash) continue;
+      // confirmed 상태의 입금은 바로 wallets에 반영
+      // 지갑 잔액 업데이트 (입금 금액 추가)
+      const { data: wallet } = await supabase
+        .from('wallets')
+        .select('balance, wallet_id')
+        .eq('user_id', deposit.user_id)
+        .eq('coin_type', deposit.coin_type)
+        .eq('wallet_type', 'hot')
+        .single();
 
-      // 개발 모드 txHash 자동 완료 처리
-      if (txHash.startsWith('dev_tx_') || txHash.startsWith('dev_')) {
-        // 1. deposit 상태 업데이트
+      if (wallet) {
+        const newBalance = Number(wallet.balance) + Number(deposit.amount);
+        await supabase
+          .from('wallets')
+          .update({ 
+            balance: newBalance,
+            updated_at: new Date().toISOString(),
+            last_deposit_id: deposit.deposit_id,
+            last_deposit_amount: deposit.amount,
+            last_updated_from: 'monitor-transactions'
+          })
+          .eq('wallet_id', wallet.wallet_id);
+
+        // Deposit을 지갑 반영 완료 처리
         await supabase
           .from('deposits')
           .update({ 
-            status: 'confirmed',
-            confirmations: deposit.required_confirmations || 1,
-            confirmed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            wallet_updated: true,
+            wallet_updated_at: new Date().toISOString()
           })
           .eq('deposit_id', deposit.deposit_id);
 
-        // 2. 지갑 잔액 업데이트 (입금 금액 추가)
-        const { data: wallet } = await supabase
-          .from('wallets')
-          .select('balance, wallet_id')
-          .eq('user_id', deposit.user_id)
-          .eq('coin_type', deposit.coin_type)
-          .eq('wallet_type', 'hot')
-          .single();
-
-        if (wallet) {
-          const newBalance = Number(wallet.balance) + Number(deposit.amount);
-          await supabase
-            .from('wallets')
-            .update({ 
-              balance: newBalance,
-              updated_at: new Date().toISOString()
-            })
-            .eq('wallet_id', wallet.wallet_id);
-
-          console.log(`✅ 개발 모드 입금 자동 완료: ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
-        } else {
-          console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
-        }
-
+        console.log(`✅ 입금 처리됨: ${deposit.deposit_id} - ${deposit.tx_hash || 'no-tx'}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
         updatedCount++;
-        continue;
-      }
-
-      // 1. Biconomy Status API 체크 (우선)
-      const biconomyStatus = await getBiconomyStatus(txHash);
-      
-      if (biconomyStatus && biconomyStatus.status === 'completed') {
-        // 1. deposit 상태 업데이트
-        await supabase
-          .from('deposits')
-          .update({ 
-            status: 'completed',
-            updated_at: new Date().toISOString()
-          })
-          .eq('deposit_id', deposit.deposit_id);
-
-        // 2. 지갑 잔액 업데이트 (입금 금액 추가)
-        const { data: wallet } = await supabase
-          .from('wallets')
-          .select('balance, wallet_id')
-          .eq('user_id', deposit.user_id)
-          .eq('coin_type', deposit.coin_type)
-          .eq('wallet_type', 'hot')
-          .single();
-
-        if (wallet) {
-          const newBalance = Number(wallet.balance) + Number(deposit.amount);
-          await supabase
-            .from('wallets')
-            .update({ 
-              balance: newBalance,
-              updated_at: new Date().toISOString()
-            })
-            .eq('wallet_id', wallet.wallet_id);
-
-          console.log(`✅ 입금 완료 (Biconomy): ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
-        } else {
-          console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
-        }
-
-        updatedCount++;
-        continue;
-      }
-
-      // 2. RPC로 직접 체크
-      if (deposit.coins && deposit.coins.rpc_url) {
-        const receipt = await getTransactionReceipt(txHash, deposit.coins.rpc_url);
-        
-        if (receipt) {
-          if (receipt.status === 1) {
-            // 성공 - 1. deposit 상태 업데이트
-            await supabase
-              .from('deposits')
-              .update({ 
-                status: 'completed',
-                updated_at: new Date().toISOString()
-              })
-              .eq('deposit_id', deposit.deposit_id);
-
-            // 2. 지갑 잔액 업데이트 (입금 금액 추가)
-            const { data: wallet } = await supabase
-              .from('wallets')
-              .select('balance, wallet_id')
-              .eq('user_id', deposit.user_id)
-              .eq('coin_type', deposit.coin_type)
-              .eq('wallet_type', 'hot')
-              .single();
-
-            if (wallet) {
-              const newBalance = Number(wallet.balance) + Number(deposit.amount);
-              await supabase
-                .from('wallets')
-                .update({ 
-                  balance: newBalance,
-                  updated_at: new Date().toISOString()
-                })
-                .eq('wallet_id', wallet.wallet_id);
-
-              console.log(`✅ 입금 완료 (RPC): ${deposit.deposit_id} - ${txHash}, 잔액 업데이트: ${wallet.balance} -> ${newBalance}`);
-            } else {
-              console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
-            }
-
-            updatedCount++;
-          } else if (receipt.status === 0) {
-            // 실패
-            await supabase
-              .from('deposits')
-              .update({ 
-                status: 'failed',
-                updated_at: new Date().toISOString()
-              })
-              .eq('deposit_id', deposit.deposit_id);
-
-            console.log(`❌ 입금 실패: ${deposit.deposit_id} - ${txHash}`);
-            updatedCount++;
-          }
-        }
+      } else {
+        console.log(`⚠️ 지갑을 찾을 수 없음: user_id=${deposit.user_id}, coin_type=${deposit.coin_type}`);
       }
     } catch (error) {
       console.error(`입금 체크 오류 (${deposit.deposit_id}):`, error);
@@ -385,6 +288,240 @@ async function monitorTransactions() {
   console.log('📊 모니터링 결과:', result);
   
   return result;
+}
+
+/**
+ * TronScan API를 이용한 블록체인 스캔
+ * - API 키로만 호출
+ * - TRX + TRC20 토큰 모두 처리
+ * - 응답 데이터 파싱 후 업데이트
+ */
+async function scanBlockchainForDeposits() {
+  console.log('🔍 TronScan 블록체인 스캔 시작');
+  
+  const TRON_API_KEY = Deno.env.get('TRON_API_KEY') || '';
+  const TRON_SCAN_API = 'https://apilist.tronscan.org/api';
+
+  if (!TRON_API_KEY) {
+    console.error('❌ TRON_API_KEY 없음');
+    return { scanned: 0, created: 0, error: 'Missing API key' };
+  }
+
+  try {
+    // 1️⃣ Production 센터 조회
+    console.log('📋 Production 센터 조회 중...');
+    const { data: centers, error: centerError } = await supabase
+      .from('centers')
+      .select('user_id')
+      .eq('operation_mode', 'production')
+      .eq('status', 'active');
+
+    if (centerError) {
+      console.error('❌ 센터 조회 실패:', centerError);
+      return { scanned: 0, created: 0, error: centerError.message };
+    }
+
+    if (!centers || centers.length === 0) {
+      console.log('⚠️ Production 센터 없음');
+      return { scanned: 0, created: 0 };
+    }
+
+    console.log(`✅ 센터 ${centers.length}개 조회됨`);
+    const centerUserIds = centers.map(c => c.user_id);
+
+    // 2️⃣ 각 센터의 store (가맹점) 조회
+    console.log('🏪 가맹점 조회 중...');
+    const { data: stores, error: storeError } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('role', 'store')
+      .in('parent_user_id', centerUserIds);
+
+    if (storeError) {
+      console.error('❌ 가맹점 조회 실패:', storeError);
+      return { scanned: 0, created: 0, error: storeError.message };
+    }
+
+    const storeUserIds = stores?.map(s => s.user_id) || [];
+    console.log(`✅ 가맹점 ${storeUserIds.length}개 조회됨`);
+
+    // 3️⃣ 가맹점 소속 일반사용자 조회
+    console.log('👥 일반사용자 조회 중...');
+    let generalUserIds: string[] = [];
+    if (storeUserIds.length > 0) {
+      const { data: generalUsers, error: generalError } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('role', 'user')
+        .in('parent_user_id', storeUserIds);
+
+      if (generalError) {
+        console.error('⚠️ 일반사용자 조회 오류:', generalError);
+      } else {
+        generalUserIds = generalUsers?.map(u => u.user_id) || [];
+      }
+    }
+    console.log(`✅ 일반사용자 ${generalUserIds.length}명 조회됨`);
+
+    // 4️⃣ 모든 user_id 통합 (center + store + general)
+    const allUserIds = [...centerUserIds, ...storeUserIds, ...generalUserIds];
+    console.log(`📊 전체 스캔 대상 user_id: ${allUserIds.length}개`);
+
+    // 5️⃣ Hot 지갑 조회 (T로 시작하는 TRON 주소)
+    console.log('🏦 Hot 지갑 조회 중...');
+    const { data: wallets, error: walletError } = await supabase
+      .from('wallets')
+      .select('wallet_id, user_id, address, coin_type, balance')
+      .in('user_id', allUserIds)
+      .eq('wallet_type', 'hot')
+      .eq('status', 'active')
+      .eq('coin_type', 'TRX')
+      .like('address', 'T%'); // TRON 주소는 T로 시작
+
+    if (walletError) {
+      console.error('❌ 지갑 조회 실패:', walletError);
+      return { scanned: 0, created: 0, error: walletError.message };
+    }
+
+    if (!wallets || wallets.length === 0) {
+      console.log('⚠️ Hot 지갑 없음');
+      return { scanned: 0, created: 0 };
+    }
+
+    console.log(`✅ Hot 지갑 ${wallets.length}개 조회됨`);
+
+    let scannedCount = 0;
+    let createdCount = 0;
+
+    // 3️⃣ 각 지갑별 TronScan API 호출
+    for (const wallet of wallets) {
+      try {
+        console.log(`📞 주소 스캔: ${wallet.address}`);
+
+        // ====== TRX 잔액 조회 (balance 필드) ======
+        console.log(`  🪙 TRX 잔액 조회...`);
+        const trxUrl = `${TRON_SCAN_API}/account?address=${wallet.address}&apikey=${TRON_API_KEY}`;
+        
+        const trxResponse = await fetch(trxUrl);
+        if (trxResponse.ok) {
+          const trxData = await trxResponse.json();
+          console.log(`  📥 API 응답 구조:`, {
+            hasBalance: trxData?.balance !== undefined,
+            hasAssetV2: Array.isArray(trxData?.assetV2),
+            balanceValue: trxData?.balance,
+            assetV2Count: trxData?.assetV2?.length || 0
+          });
+          
+          // TRX 잔액은 balance 필드에 있음 (단위: SUN)
+          if (trxData?.balance !== undefined && trxData.balance !== null) {
+            const tronBalance = Number(trxData.balance) / 1000000; // SUN to TRX 변환
+            console.log(`  ✅ TRX 잔액: ${tronBalance} TRX (${trxData.balance} SUN)`);
+
+            // TRX Wallet 업데이트
+            const { error: updateError } = await supabase
+              .from('wallets')
+              .update({
+                balance: tronBalance,
+                updated_at: new Date().toISOString(),
+                last_scanned_at: new Date().toISOString(),
+                last_updated_from: 'tronscan-api'
+              })
+              .eq('wallet_id', wallet.wallet_id);
+
+            if (!updateError) {
+              console.log(`  ✅ TRX 업데이트 완료: ${tronBalance}`);
+              createdCount++;
+            } else {
+              console.error(`  ⚠️ TRX 업데이트 실패:`, updateError);
+            }
+          } else {
+            console.log(`  ⚠️ TRX 잔액 없음: balance=${trxData?.balance}`);
+          }
+
+          // ====== TRC-20 / TRC-10 토큰 조회 (assetV2 배열) ======
+          if (trxData?.assetV2 && Array.isArray(trxData.assetV2) && trxData.assetV2.length > 0) {
+            console.log(`  🔗 ${trxData.assetV2.length}개 토큰 감지`);
+
+            for (const asset of trxData.assetV2) {
+              try {
+                const tokenSymbol = asset.key || asset.tokenAbbr || 'UNKNOWN';
+                const tokenBalance = Number(asset.value || 0);
+
+                console.log(`    💰 ${tokenSymbol}: ${tokenBalance}`);
+
+                // TRC20 토큰용 wallet record 조회
+                const { data: tokenWallet, error: tokenWalletError } = await supabase
+                  .from('wallets')
+                  .select('wallet_id')
+                  .eq('user_id', wallet.user_id)
+                  .eq('coin_type', tokenSymbol)
+                  .eq('wallet_type', 'hot')
+                  .eq('status', 'active')
+                  .single();
+
+                if (tokenWalletError && tokenWalletError.code !== 'PGRST116') {
+                  console.error(`    ⚠️ ${tokenSymbol} 지갑 조회 오류:`, tokenWalletError);
+                  continue;
+                }
+
+                if (tokenWallet) {
+                  // 기존 토큰 지갑 업데이트
+                  const { error: updateError } = await supabase
+                    .from('wallets')
+                    .update({
+                      balance: tokenBalance,
+                      updated_at: new Date().toISOString(),
+                      last_scanned_at: new Date().toISOString(),
+                      last_updated_from: 'tronscan-api'
+                    })
+                    .eq('wallet_id', tokenWallet.wallet_id);
+
+                  if (!updateError) {
+                    console.log(`    ✅ ${tokenSymbol} 업데이트 완료`);
+                    createdCount++;
+                  } else {
+                    console.error(`    ⚠️ ${tokenSymbol} 업데이트 실패:`, updateError);
+                  }
+                } else {
+                  console.log(`    ℹ️ ${tokenSymbol} 지갑 없음 (생성 필요)`);
+                }
+
+              } catch (tokenError) {
+                console.error(`    ❌ 토큰 처리 오류:`, tokenError);
+              }
+            }
+          } else {
+            console.log(`  ℹ️ 토큰 없음 (assetV2 비어있음)`);
+          }
+        } else {
+          console.log(`  ⚠️ API 오류: ${trxResponse.status}`);
+        }
+
+        scannedCount++;
+
+      } catch (error) {
+        console.error(`❌ 지갑 스캔 오류 (${wallet.address}):`, error);
+        continue;
+      }
+    }
+
+    const result = {
+      scanned: scannedCount,
+      created: createdCount,
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('🎉 TronScan 스캔 완료:', result);
+    return result;
+
+  } catch (error) {
+    console.error('❌ scanBlockchainForDeposits 오류:', error);
+    return { 
+      scanned: 0, 
+      created: 0, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    };
+  }
 }
 
 // =====================================================
@@ -1051,15 +1188,122 @@ app.route("/make-server-b6d5667f/wallet", walletRouter);
 app.route("/make-server-b6d5667f/transaction", transactionRouter);
 
 // =====================================================
+// 거래 수수료 및 내역 조회 API
+// =====================================================
+app.route("/make-server-b6d5667f/transaction-fee", transactionFeeRouter);
+
+// =====================================================
+// 스테이킹 관리 API
+// =====================================================
+app.route("/make-server-b6d5667f/staking", stakingRouter);
+
+// =====================================================
+// Deposit 웹훅 API (외부 서비스에서 블록체인 TX 감지 시 호출)
+// =====================================================
+app.post("/make-server-b6d5667f/api/deposits/webhook", async (c) => {
+  try {
+    console.log('🔗 Deposit 웹훅 수신');
+    const body = await c.req.json();
+    const { user_id, wallet_id, coin_type, amount, tx_hash, from_address, status, confirmations } = body;
+
+    if (!user_id || !wallet_id || !coin_type || !amount || !tx_hash) {
+      return c.json({ 
+        success: false, 
+        error: '필수 파라미터 누락 (user_id, wallet_id, coin_type, amount, tx_hash)' 
+      }, 400);
+    }
+
+    // 중복 체크: 동일한 tx_hash가 이미 있는지 확인
+    const { data: existingDeposit } = await supabase
+      .from('deposits')
+      .select('deposit_id')
+      .eq('tx_hash', tx_hash)
+      .single();
+
+    if (existingDeposit) {
+      console.log(`⚠️ 이미 존재하는 TX: ${tx_hash}`);
+      return c.json({ 
+        success: true, 
+        message: '이미 처리된 입금입니다',
+        deposit_id: existingDeposit.deposit_id
+      });
+    }
+
+    // 새 deposit 생성
+    const { data: newDeposit, error: insertError } = await supabase
+      .from('deposits')
+      .insert({
+        user_id,
+        wallet_id,
+        coin_type,
+        amount,
+        tx_hash,
+        from_address: from_address || null,
+        status: status || 'confirmed',
+        confirmations: confirmations || 0,
+        created_at: new Date().toISOString(),
+        confirmed_at: status === 'confirmed' ? new Date().toISOString() : null,
+        wallet_updated: false
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('❌ Deposit 생성 오류:', insertError);
+      return c.json({ 
+        success: false, 
+        error: insertError.message 
+      }, 500);
+    }
+
+    console.log(`✅ Deposit 생성됨: ${newDeposit.deposit_id}, TX: ${tx_hash}`);
+
+    return c.json({
+      success: true,
+      deposit: newDeposit,
+      message: '입금이 기록되었습니다'
+    });
+
+  } catch (error: any) {
+    console.error('❌ 웹훅 오류:', error);
+    return c.json({ 
+      error: error.message || 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, 500);
+  }
+});
+
+// =====================================================
 // 트랜잭션 모니터링 API
 // =====================================================
-app.get("/make-server-b6d5667f/monitor-transactions", async (c) => {
+app.all("/make-server-b6d5667f/monitor-transactions", async (c) => {
   try {
-    console.log('🔍 트랜잭션 모니터링 요청 수신');
+    const method = c.req.method;
+    console.log(`🔍 트랜잭션 모니터링 요청 수신 (${method})`);
     const result = await monitorTransactions();
     return c.json(result);
   } catch (error: any) {
     console.error('❌ 모니터링 오류:', error);
+    return c.json({ 
+      error: error.message || 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, 500);
+  }
+});
+
+// =====================================================
+// 블록체인 스캔 API (TronScan)
+// =====================================================
+app.all("/make-server-b6d5667f/scan-blockchain", async (c) => {
+  try {
+    console.log('🔍 블록체인 스캔 요청 수신 - 엔드포인트 호출됨');
+    console.log('⏰ 현재시간:', new Date().toISOString());
+    console.log('🔑 TRON_API_KEY 확인:', Deno.env.get('TRON_API_KEY') ? '있음' : '없음');
+    const result = await scanBlockchainForDeposits();
+    console.log('✅ 스캔 결과:', result);
+    return c.json(result);
+  } catch (error: any) {
+    console.error('❌ 블록체인 스캔 오류:', error);
     return c.json({ 
       error: error.message || 'Unknown error',
       timestamp: new Date().toISOString()

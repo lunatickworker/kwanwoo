@@ -78,6 +78,22 @@ export function Header({ onNavigate }: HeaderProps) {
     }
   };
 
+  // 가맹점 판매 요청 알림 소리 재생
+  const playCoinSaleSound = () => {
+    if (!soundEnabled) return;
+    
+    try {
+      const soundUrl = new URL('../assets/sounds/storeapply.MP3', import.meta.url).href;
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.play().catch(err => {
+        console.error('Failed to play coin sale sound:', err);
+      });
+    } catch (error) {
+      console.error('Error creating audio element:', error);
+    }
+  };
+
   // 신규 가입 알림 소리 재생
   const playSignupSound = () => {
     if (!soundEnabled) return;
@@ -276,7 +292,7 @@ export function Header({ onNavigate }: HeaderProps) {
         console.log('🔔 [Header] 알림 확인 - 하위 사용자 IDs:', hierarchyUserIds);
 
         let signupCount = 0, verificationCount = 0, orderCount = 0, supportCount = 0, depositCount = 0, coinSaleCount = 0;
-        let verificationData = [], transferData = [], depositData = [];
+        let verificationData = [], transferData = [], depositData = [], coinSaleData = [];
 
         // 센터/에이전시만 하위 사용자 회원가입 알림 조회
         if (isCenter || isAgency) {
@@ -323,16 +339,8 @@ export function Header({ onNavigate }: HeaderProps) {
           supportCount = supportResult.count || 0;
         }
 
-        // 입금 알림 - 센터는 하위 사용자, 가맹점은 자신의 입금만
-        if (isCenter || isAgency) {
-          const result = await supabase
-            .from('deposits')
-            .select('*', { count: 'exact' })
-            .in('user_id', hierarchyUserIds)
-            .eq('status', 'pending');
-          depositData = result.data || [];
-          depositCount = result.count || 0;
-        } else if (isStore) {
+        // 입금 알림 - 가맹점만
+        if (isStore) {
           const result = await supabase
             .from('deposits')
             .select('*', { count: 'exact' })
@@ -349,6 +357,7 @@ export function Header({ onNavigate }: HeaderProps) {
             .select('*', { count: 'exact' })
             .eq('center_id', user.id)
             .eq('status', 'pending');
+          coinSaleData = result.data || [];
           coinSaleCount = result.count || 0;
         }
 
@@ -541,10 +550,6 @@ export function Header({ onNavigate }: HeaderProps) {
                 });
                 if (insertError) {
                   console.error('Failed to create deposit notification:', insertError);
-                } else {
-                  // ✅ 알림 생성 성공 → 직접 소리 재생
-                  console.log('🎵 [Header] Playing deposit sound');
-                  playPurchaseRequestSound();
                 }
               }
             } catch (err) {
@@ -608,6 +613,50 @@ export function Header({ onNavigate }: HeaderProps) {
             }
           } catch (err) {
             console.error('Failed to create signup notifications:', err);
+          }
+        }
+
+        // 가맹점 코인 판매 요청 알림을 notifications 테이블에 생성 (센터/에이전시만)
+        if ((isCenter || isAgency) && coinSaleData && coinSaleData.length > 0) {
+          for (const coinSale of coinSaleData) {
+            try {
+              const coinSaleId = coinSale.id;
+              
+              // 이미 생성된 알림이 있는지 확인 (클라이언트 필터링)
+              const { data: existingNotifications } = await supabase
+                .from('notifications')
+                .select('*')
+                .eq('user_id', user.id)
+                .eq('type', 'store_coin_sale_request')
+                .eq('is_read', false);
+              
+              // 클라이언트에서 필터링 - 같은 coin_sale_id 확인
+              const hasDuplicate = existingNotifications?.some(notif => {
+                const notifId = notif.data?.id;
+                return notifId === coinSaleId;
+              });
+              
+              // 읽지 않은 알림이 없으면 새로 생성
+              if (!hasDuplicate) {
+                const { error: insertError } = await supabase.from('notifications').insert({
+                  user_id: user.id,
+                  type: 'store_coin_sale_request',
+                  title: '가맹점 판매 요청',
+                  message: `새로운 가맹점 판매 요청이 있습니다.`,
+                  is_read: false,
+                  data: coinSale,
+                });
+                if (insertError) {
+                  console.error('Failed to insert coin sale notification:', insertError);
+                } else {
+                  // ✅ 알림 생성 성공 → 직접 소리 재생
+                  console.log('🎵 [Header] Playing coin sale sound');
+                  playCoinSaleSound();
+                }
+              }
+            } catch (err) {
+              console.error('Failed to process coin sale notification:', err);
+            }
           }
         }
 
@@ -824,6 +873,43 @@ export function Header({ onNavigate }: HeaderProps) {
       )
       .subscribe();
 
+    // 실시간 구독: 가맹점 코인 판매 요청
+    const coinSaleSub = (isCenter || isAgency) ? supabase
+      .channel('store_coin_sales_notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'store_coin_sales'
+        },
+        async (payload: any) => {
+          console.log('🔔 [Header] store_coin_sales changed:', payload);
+          if (payload.eventType === 'INSERT') {
+            // 새로운 가맹점 판매 요청이 생성됨 - 알림 생성
+            const { error: notificationError } = await supabase.from('notifications').insert({
+              user_id: user?.id,
+              type: 'store_coin_sale_request',
+              title: '가맹점 판매 요청',
+              message: `새로운 가맹점 판매 요청이 있습니다.`,
+              is_read: false,
+              data: payload.new,
+            });
+            if (notificationError) {
+              console.error('Failed to create notification:', notificationError);
+            } else {
+              // soundEnabled 체크 후 소리 재생
+              if (soundEnabled) {
+                console.log('🎵 [Header] Playing coin sale sound (realtime)');
+                playCoinSaleSound();
+              }
+            }
+          }
+          fetchNotifications();
+        }
+      )
+      .subscribe() : null;
+
     // 실시간 구독: 고객센터 메시지
     const supportSub = supabase
       .channel('support_messages_notifications')
@@ -847,11 +933,12 @@ export function Header({ onNavigate }: HeaderProps) {
       if (accountVerificationSub) accountVerificationSub.unsubscribe(); // ✅ null 체크
       if (usersSub) usersSub.unsubscribe(); // ✅ null 체크
       if (depositWithdrawalSub) depositWithdrawalSub.unsubscribe(); // ✅ null 체크
+      if (coinSaleSub) coinSaleSub.unsubscribe(); // ✅ null 체크
       depositSub.unsubscribe();
       supportSub.unsubscribe();
       clearInterval(interval);
     };
-  }, [showNotifications, user?.id, user?.role]);
+  }, [showNotifications, user?.id, user?.role, soundEnabled]);
 
   // 가맹점 입금 알림 (가맹점만)
   useEffect(() => {
@@ -1036,19 +1123,19 @@ export function Header({ onNavigate }: HeaderProps) {
                 )}
               </button>
 
-              {/* 입금 알림 (노란색) */}
+              {/* 가맹점 판매 요청 알림 (주황색) */}
               <button 
                 className="relative p-2.5 text-slate-400 hover:text-slate-300 transition-colors"
                 onClick={() => {
                   localStorage.setItem('admin_deposit_active_tab', 'coin_sales');
                   onNavigate('deposit-withdrawal');
                 }}
-                title="입금 알림"
+                title="가맹점 판매 요청 알림"
               >
                 <ArrowDownCircle className="w-5 h-5" />
-                {depositNotifications > 0 && (
-                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-yellow-500 rounded-full text-[10px] text-white flex items-center justify-center px-1">
-                    {depositNotifications}
+                {coinSaleNotifications > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-orange-500 rounded-full text-[10px] text-white flex items-center justify-center px-1">
+                    {coinSaleNotifications}
                   </span>
                 )}
               </button>

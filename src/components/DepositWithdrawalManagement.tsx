@@ -1,4 +1,4 @@
-import { ArrowDownCircle, ArrowUpCircle, CheckCircle, XCircle, Clock, Filter, Search, ChevronLeft, ChevronRight, Eye, DollarSign, ExternalLink, FileText, Coins as CoinsIcon, Landmark } from "lucide-react";
+import { ArrowDownCircle, ArrowUpCircle, CheckCircle, XCircle, Clock, Filter, Search, ChevronLeft, ChevronRight, Eye, DollarSign, ExternalLink, FileText, Coins as CoinsIcon, Landmark, Bell, AlertCircle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { supabase } from "../utils/supabase/client";
 import { useAuth } from "../contexts/AuthContext";
@@ -118,7 +118,23 @@ export function DepositWithdrawalManagement() {
     token: string;
   } | null>(null);
   const [isEstimatingGas, setIsEstimatingGas] = useState(false);
+
+  // TX 상세 조회
+  const [selectedTxHash, setSelectedTxHash] = useState<string | null>(null);
+  const [txDetail, setTxDetail] = useState<any>(null);
+  const [isFetchingTxDetail, setIsFetchingTxDetail] = useState(false);
   const [operationMode, setOperationMode] = useState<'development' | 'production'>('development');
+
+  // 거래 수수료 추정 (실제 거래 데이터 기반)
+  const [transactionFee, setTransactionFee] = useState<{
+    average_fee: number;
+    min_fee: number;
+    max_fee: number;
+    transaction_count: number;
+    can_estimate: boolean;
+    warning?: string;
+  } | null>(null);
+  const [isEstimatingFee, setIsEstimatingFee] = useState(false);
   
   // Transaction Receipt 모달
   const [showReceiptModal, setShowReceiptModal] = useState(false);
@@ -198,6 +214,169 @@ export function DepositWithdrawalManagement() {
     }
   }, [user]); // ✅ activeTab 제거 - 탭 변경이 데이터 fetch를 트리거하면 안 됨
 
+  // 수수료 추정 (실제 거래 데이터 기반)
+  const fetchTransactionFee = async (walletId: string) => {
+    try {
+      setIsEstimatingFee(true);
+
+      // 지갑 주소 조회
+      const { data: walletData, error: walletError } = await supabase
+        .from('wallets')
+        .select('address')
+        .eq('wallet_id', walletId)
+        .single();
+
+      if (walletError || !walletData?.address) {
+        console.error('❌ 지갑 주소 조회 실패:', walletError);
+        setTransactionFee(null);
+        return;
+      }
+
+      // Edge Function에서 수수료 추정
+      const response = await fetch(
+        `${SUPABASE_CONFIG.FUNCTIONS_BASE_URL}/make-server-b6d5667f/transaction/estimate-fee/${walletData.address}`
+      );
+
+      if (response.ok) {
+        const feeData = await response.json();
+        console.log('💰 수수료 추정 데이터:', feeData);
+        
+        if (feeData.fee_estimate) {
+          setTransactionFee(feeData.fee_estimate);
+        }
+      } else {
+        console.error('❌ 수수료 추정 실패:', response.statusText);
+        setTransactionFee(null);
+      }
+    } catch (error) {
+      console.error('❌ 수수료 조회 중 오류:', error);
+      setTransactionFee(null);
+    } finally {
+      setIsEstimatingFee(false);
+    }
+  };
+
+  // selectedRequest 변경 시 수수료 조회
+  useEffect(() => {
+    if (selectedRequest?.wallet_id) {
+      fetchTransactionFee(selectedRequest.wallet_id);
+    } else {
+      setTransactionFee(null);
+    }
+  }, [selectedRequest?.wallet_id]);
+
+  // TX 상세 조회
+  const fetchTxDetail = async (txHash: string) => {
+    if (!txHash) return;
+    
+    setIsFetchingTxDetail(true);
+    try {
+      // AuthContext의 user 정보로 인증 확인
+      const isAuthenticated = !!user;
+      const isDevelopmentTx = txHash.startsWith('dev_');
+      
+      console.log('🔍 TX 상세 조회 시작:', {
+        txHash,
+        isDevelopmentTx,
+        isAuthenticated,
+        userEmail: user?.email,
+        timestamp: new Date().toISOString()
+      });
+      
+      // 개발 TXID는 user 정보만으로 진행, 실제 TXID는 토큰 필요
+      if (!isAuthenticated) {
+        console.error('❌ 인증 필요함. 현재 user:', user);
+        toast.error('로그인 후 사용해주세요');
+        setIsFetchingTxDetail(false);
+        return;
+      }
+      
+      let authToken = '';
+      
+      // 실제 TXID인 경우 토큰 필요
+      if (!isDevelopmentTx) {
+        // 세션 갱신 시도
+        const { data: { session } } = await supabase.auth.refreshSession();
+        authToken = session?.access_token || '';
+        
+        // 토큰이 없으면 localStorage에서 가져오기
+        if (!authToken) {
+          console.warn('⚠️ Supabase 세션 없음. localStorage 확인 중...');
+          const sessionData = localStorage.getItem('sb-session') || localStorage.getItem('supabase.auth.token');
+          if (sessionData) {
+            try {
+              const parsed = JSON.parse(sessionData);
+              authToken = parsed.access_token || parsed.token;
+            } catch (e) {
+              console.warn('⚠️ localStorage 파싱 실패');
+            }
+          }
+        }
+        
+        if (!authToken) {
+          console.error('❌ 실제 TXID 조회에 토큰이 필요함');
+          toast.error('인증 정보가 만료되었습니다. 다시 로그인해주세요');
+          setIsFetchingTxDetail(false);
+          return;
+        }
+      }
+
+      const backendUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
+      const requestUrl = `${backendUrl}/transaction/detail/${txHash}`;
+      
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+      
+      // 실제 TXID인 경우 Authorization 헤더 추가
+      if (!isDevelopmentTx && authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      
+      console.log('📤 API 요청:', {
+        url: requestUrl,
+        method: 'GET',
+        isDevelopmentTx,
+        hasAuthHeader: !isDevelopmentTx
+      });
+
+      const response = await fetch(requestUrl, { headers });
+
+      console.log('📥 API 응답:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type')
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ 응답 데이터:', data);
+        if (data.success) {
+          setTxDetail(data.transaction);
+          setSelectedTxHash(txHash);
+          toast.success('거래 정보를 불러왔습니다');
+        } else {
+          console.error('❌ API 성공 응답이지만 success=false:', data);
+          toast.error('거래 정보를 찾을 수 없습니다');
+        }
+      } else if (response.status === 401) {
+        const errorData = await response.json();
+        console.error('❌ 401 Unauthorized:', errorData);
+        toast.error('인증이 만료되었습니다. 다시 로그인해주세요');
+      } else {
+        const errorData = await response.json();
+        console.error('❌ API 오류:', { status: response.status, error: errorData });
+        toast.error('거래 상세 정보 조회 실패');
+      }
+    } catch (error) {
+      console.error('TX 상세 조회 오류:', error);
+      toast.error('거래 상세 조회 중 오류가 발생했습니다');
+    } finally {
+      setIsFetchingTxDetail(false);
+    }
+  };
+
+  // 데이터 로드
   const fetchData = async () => {
     if (!user || !user.role) return;
 
@@ -398,7 +577,7 @@ export function DepositWithdrawalManagement() {
         gasSponsorEnabled
       });
 
-      // 2. 승인 처리
+      // 2. 승인 처리 (TRX 위임 옵션 포함)
       const result = await approveTransferRequest({
         request: {
           request_id: request.request_id,
@@ -408,11 +587,12 @@ export function DepositWithdrawalManagement() {
           amount: request.amount
         },
         adminNote,
-        adminId: user.id
+        adminId: user.id,
+        shouldDelegateTRX: gasSponsorEnabled
       });
 
       if (result.success) {
-        toast.success(`승인되었습니다. 가스비 지원: ${gasSponsorEnabled ? '활성화' : '비활성화'}`);
+        toast.success(`승인되었습니다. 가스비 지원: ${gasSponsorEnabled ? '활성화 (TRX 위임됨)' : '비활성화'}`);
         setSelectedRequest(null);
         setAdminNote('');
         setGasEstimate(null);
@@ -447,12 +627,14 @@ export function DepositWithdrawalManagement() {
       const result = await approveCoinSale({
         sale,
         adminId: user.id,
-        adminNote
+        adminNote,
+        gasSponsorEnabled
       });
 
       if (result.success) {
         setSelectedCoinSale(null);
         setAdminNote('');
+        setGasSponsorEnabled(true); // 기본값으로 리셋
         fetchData();
       } else {
         toast.error(result.error || '승인 처리에 실패했습니다');
@@ -499,10 +681,44 @@ export function DepositWithdrawalManagement() {
     }
   };
 
-  // 센터 운영 모드 확인 및 가스비 추정 (기존 로직 유지)
+  // 네트워크 타입 판단 (TRON vs EVM)
+  const isTronNetwork = (coinType: string): boolean => {
+    return coinType.includes('TRX') || coinType.includes('TRC') || coinType.includes('USDT');
+  };
+
+  // 센터 운영 모드 확인 및 가스비 추정 (EVM 네트워크만)
   const checkModeAndEstimateGas = async (request: TransferRequest) => {
     try {
       if (!user?.id) return;
+      
+      // TRON 네트워크는 가스비 추정 불필요 (수수료에서 표시)
+      if (isTronNetwork(request.coin_type)) {
+        console.log('🔶 TRON 네트워크 감지: 거래 수수료 사용');
+        setIsEstimatingGas(false);
+        
+        // TRON의 경우: 관리자의 TRX 잔액 확인
+        try {
+          const { data: adminWallet } = await supabase
+            .from('wallets')
+            .select('balance')
+            .eq('user_id', user.id)
+            .eq('coin_type', 'TRX')
+            .single();
+          
+          if (adminWallet) {
+            console.log(`💰 관리자 TRX 잔액: ${adminWallet.balance} TRX`);
+            // gasEstimate에 관리자 잔액 정보 추가
+            setGasEstimate({
+              estimatedCost: adminWallet.balance.toFixed(6),
+              token: 'TRX',
+              isAdminBalance: true
+            });
+          }
+        } catch (error) {
+          console.error('❌ 관리자 TRX 잔액 조회 실패:', error);
+        }
+        return;
+      }
       
       setIsEstimatingGas(true);
       setGasEstimate(null);
@@ -859,11 +1075,11 @@ export function DepositWithdrawalManagement() {
                              <span className="truncate max-w-[100px]">{item.tx_hash}</span>
                              <button
                                onClick={() => {
-                                 // TX 상세 조회 (가짜 TX인 경우와 실제 TX인 경우 구분 필요)
-                                 // 현재는 간단히 알림만
-                                 toast.info(`트랜잭션 해시: ${item.tx_hash}`);
+                                 fetchTxDetail(item.tx_hash);
                                }}
-                               className="p-1 hover:bg-slate-700 rounded"
+                               disabled={isFetchingTxDetail}
+                               className="p-1 hover:bg-slate-700 rounded disabled:opacity-50"
+                               title="거래 상세 정보 조회"
                              >
                                <ExternalLink className="w-3 h-3" />
                              </button>
@@ -885,7 +1101,10 @@ export function DepositWithdrawalManagement() {
                       )}
                       {item.status === 'pending' && activeTab === 'coin_sales' && (
                         <button
-                          onClick={() => setSelectedCoinSale(item)}
+                          onClick={() => {
+                            setSelectedCoinSale(item);
+                            checkModeAndEstimateGas(item);
+                          }}
                           className="text-cyan-400 hover:text-cyan-300"
                         >
                           처리하기
@@ -950,26 +1169,99 @@ export function DepositWithdrawalManagement() {
                 </div>
               </div>
 
-              {/* 가스비 추정 결과 */}
-              {isEstimatingGas ? (
-                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-blue-400 flex items-center gap-2">
-                   <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                   가스비 계산 중...
-                </div>
-              ) : gasEstimate ? (
-                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-sm space-y-1">
-                   <div className="text-green-400 font-medium flex items-center gap-2">
-                     <CheckCircle className="w-4 h-4" />
-                     전송 가능 (예상 가스비: {gasEstimate.estimatedCost} {gasEstimate.token})
-                   </div>
-                   <div className="text-slate-400 text-xs">
-                     운영 모드: {operationMode === 'production' ? '프로덕션 (실제 전송)' : '개발 (가짜 전송)'}
-                   </div>
-                </div>
-              ) : (
-                <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-400">
-                  가스비 정보를 불러올 수 없습니다.
-                </div>
+              {/* 가스비 추정 결과 (EVM 네트워크만) */}
+              {!isTronNetwork(selectedRequest.coin_type) && (
+                <>
+                  {isEstimatingGas ? (
+                    <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-blue-400 flex items-center gap-2">
+                       <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                       가스비 계산 중...
+                    </div>
+                  ) : gasEstimate ? (
+                    <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-sm space-y-1">
+                       <div className="text-green-400 font-medium flex items-center gap-2">
+                         <CheckCircle className="w-4 h-4" />
+                         전송 가능 (예상 가스비: {gasEstimate.estimatedCost} {gasEstimate.token})
+                       </div>
+                       <div className="text-slate-400 text-xs">
+                         운영 모드: {operationMode === 'production' ? '프로덕션 (실제 전송)' : '개발 (가짜 전송)'}
+                       </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-400">
+                      가스비 정보를 불러올 수 없습니다.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* 거래 수수료 추정 (TRON 네트워크만) */}
+              {isTronNetwork(selectedRequest.coin_type) && (
+                <>
+                  {isEstimatingFee ? (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-400 flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+                      수수료 계산 중...
+                    </div>
+                  ) : transactionFee ? (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm space-y-1">
+                      {transactionFee.warning && (
+                        <div className="text-yellow-400 font-medium flex items-center gap-2 mb-2">
+                          <Bell className="w-4 h-4" />
+                          {transactionFee.warning}
+                        </div>
+                      )}
+                      <div className="text-amber-400 font-medium">
+                        평균 수수료: {transactionFee.average_fee.toFixed(6)} TRX
+                      </div>
+                      <div className="text-slate-400 text-xs grid grid-cols-2 gap-2 mt-2">
+                        <div>최소: {transactionFee.min_fee.toFixed(6)} TRX</div>
+                        <div>최대: {transactionFee.max_fee.toFixed(6)} TRX</div>
+                      </div>
+                      {!transactionFee.can_estimate && (
+                        <div className="text-yellow-300 text-xs mt-2 p-2 bg-yellow-500/20 rounded">
+                          ⚠️ 거래 이력이 5건 미만이므로 정확한 수수료 추정이 어려울 수 있습니다.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-400">
+                      ℹ️ 충분한 거래 이력이 없어 수수료를 계산할 수 없습니다. (최소 5건 이상 필요)
+                    </div>
+                  )}
+
+                  {/* 관리자 TRX 잔액 확인 */}
+                  {gasEstimate && gasEstimate.isAdminBalance && (
+                    <div className={`p-3 border rounded-lg text-sm space-y-1 ${
+                      parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001)
+                        ? 'bg-green-500/10 border-green-500/20'
+                        : 'bg-red-500/10 border-red-500/20'
+                    }`}>
+                      <div className={`font-medium flex items-center gap-2 ${
+                        parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001)
+                          ? 'text-green-400'
+                          : 'text-red-400'
+                      }`}>
+                        {parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001) ? (
+                          <CheckCircle className="w-4 h-4" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4" />
+                        )}
+                        관리자 TRX 잔액: {gasEstimate.estimatedCost} TRX
+                      </div>
+                      {transactionFee && (
+                        <div className="text-slate-400 text-xs">
+                          예상 수수료: {transactionFee.average_fee.toFixed(6)} TRX
+                        </div>
+                      )}
+                      {parseFloat(gasEstimate.estimatedCost) < (transactionFee?.average_fee || 0.001) && (
+                        <div className="text-red-300 text-xs mt-2 p-2 bg-red-500/20 rounded">
+                          ❌ TRX 부족: 전송할 수 없습니다. 관리자는 추가 TRX가 필요합니다.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
 
               <div>
@@ -1085,6 +1377,68 @@ export function DepositWithdrawalManagement() {
                 <p>승인 시 가맹점 지갑에서 코인이 차감되고, 센터 지갑으로 이동됩니다. 해당 금액을 가맹점에게 정산해주셨는지 확인하세요.</p>
               </div>
 
+              {/* 관리자 TRX 잔액 확인 */}
+              {gasEstimate && gasEstimate.isAdminBalance && (
+                <div className={`p-3 border rounded-lg text-sm space-y-1 ${
+                  parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001)
+                    ? 'bg-green-500/10 border-green-500/20'
+                    : 'bg-red-500/10 border-red-500/20'
+                }`}>
+                  <div className={`font-medium flex items-center gap-2 ${
+                    parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001)
+                      ? 'text-green-400'
+                      : 'text-red-400'
+                  }`}>
+                    {parseFloat(gasEstimate.estimatedCost) >= (transactionFee?.average_fee || 0.001) ? (
+                      <CheckCircle className="w-4 h-4" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4" />
+                    )}
+                    관리자 TRX 잔액: {gasEstimate.estimatedCost} TRX
+                  </div>
+                  {transactionFee && (
+                    <div className="text-slate-400 text-xs">
+                      예상 수수료: {transactionFee.average_fee.toFixed(6)} TRX
+                    </div>
+                  )}
+                  {parseFloat(gasEstimate.estimatedCost) < (transactionFee?.average_fee || 0.001) && (
+                    <div className="text-red-300 text-xs mt-2 p-2 bg-red-500/20 rounded">
+                      ❌ TRX 부족: 위임할 수 없습니다. 관리자는 추가 TRX가 필요합니다.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 가스비 지원 설정 */}
+              <div className="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <h4 className="text-sm font-medium text-white mb-1">TRX 위임 (가스비 지원)</h4>
+                    <p className="text-xs text-slate-400">
+                      활성화 시 센터의 TRX 자원을 가맹점에게 위임하여 거래 수수료를 지원합니다.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGasSponsorEnabled(!gasSponsorEnabled)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                      gasSponsorEnabled ? 'bg-cyan-500' : 'bg-slate-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        gasSponsorEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="mt-2 text-xs">
+                  <span className={`font-medium ${gasSponsorEnabled ? 'text-green-400' : 'text-red-400'}`}>
+                    {gasSponsorEnabled ? '✓ 활성화됨 (TRX 위임 가능)' : '✗ 비활성화됨 (위임 안함)'}
+                  </span>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-2">
                   관리자 메모 (필수)
@@ -1126,6 +1480,139 @@ export function DepositWithdrawalManagement() {
               >
                 닫기
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TX 상세 조회 모달 */}
+      {selectedTxHash && txDetail && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-2xl max-h-96 overflow-y-auto">
+            <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <ExternalLink className="w-5 h-5 text-cyan-400" />
+                <div>
+                  <h3 className="text-xl font-bold text-white">거래 상세 정보</h3>
+                  {txDetail.development_mode && (
+                    <p className="text-xs text-yellow-400 mt-1">⚠️ {txDetail.development_mode}</p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setSelectedTxHash(null);
+                  setTxDetail(null);
+                }}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* 거래 해시 */}
+              <div className="bg-slate-800/50 rounded-lg p-4">
+                <p className="text-slate-400 text-sm mb-1">거래 ID (Hash)</p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-cyan-400 font-mono text-sm break-all">{txDetail.hash}</code>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(txDetail.hash);
+                      toast.success('복사되었습니다');
+                    }}
+                    className="p-2 hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-white"
+                    title="클립보드에 복사"
+                  >
+                    📋
+                  </button>
+                </div>
+              </div>
+
+              {/* 기본 정보 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm mb-1">상태</p>
+                  <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                    txDetail.status === 'success' 
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }`}>
+                    {txDetail.status === 'success' ? '✓ 성공' : '✗ 실패'}
+                  </span>
+                </div>
+
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm mb-1">확인 상태</p>
+                  <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                    txDetail.confirmed 
+                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                      : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                  }`}>
+                    {txDetail.confirmed ? '✓ 확인됨' : '⏳ 대기 중'}
+                  </span>
+                </div>
+              </div>
+
+              {/* 금액 및 수수료 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm mb-1">금액</p>
+                  <p className="text-white font-bold text-lg">{parseFloat(txDetail.amount).toFixed(6)} TRX</p>
+                </div>
+
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm mb-1">수수료</p>
+                  <p className="text-white font-bold text-lg">{parseFloat(txDetail.fee).toFixed(6)} TRX</p>
+                </div>
+              </div>
+
+              {/* 주소 정보 */}
+              <div className="bg-slate-800/50 rounded-lg p-4">
+                <p className="text-slate-400 text-sm mb-2">발신자</p>
+                <code className="text-slate-300 font-mono text-sm break-all">{txDetail.from}</code>
+              </div>
+
+              <div className="bg-slate-800/50 rounded-lg p-4">
+                <p className="text-slate-400 text-sm mb-2">수신자</p>
+                <code className="text-slate-300 font-mono text-sm break-all">{txDetail.to}</code>
+              </div>
+
+              {/* 기타 정보 */}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 mb-1">블록</p>
+                  <p className="text-white font-mono">{txDetail.block}</p>
+                </div>
+
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 mb-1">타임스탬프</p>
+                  <p className="text-white text-xs">{new Date(txDetail.timestamp).toLocaleString('ko-KR')}</p>
+                </div>
+              </div>
+
+              {/* TronScan 링크 */}
+              <div className="flex gap-2 pt-2">
+                <a
+                  href={txDetail.tx_detail_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 px-4 py-3 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  TronScan에서 보기
+                </a>
+
+                <button
+                  onClick={() => {
+                    setSelectedTxHash(null);
+                    setTxDetail(null);
+                  }}
+                  className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
+                >
+                  닫기
+                </button>
+              </div>
             </div>
           </div>
         </div>

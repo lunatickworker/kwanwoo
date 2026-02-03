@@ -13,6 +13,7 @@ interface ApproveRequestParams {
   };
   adminNote: string;
   adminId: string;
+  shouldDelegateTRX?: boolean; // TRX 위임 여부
 }
 
 interface ApprovalResult {
@@ -25,11 +26,12 @@ interface ApprovalResult {
  * - 센터 운영 모드에 따라 개발/프로덕션 모드로 분기
  */
 export async function approveTransferRequest(params: ApproveRequestParams): Promise<ApprovalResult> {
-  const { request, adminNote, adminId } = params;
+  const { request, adminNote, adminId, shouldDelegateTRX } = params;
 
   try {
     console.log('📋 코인 구매 요청 승인 시작:', request);
     console.log('👤 승인자 ID:', adminId);
+    console.log('💰 TRX 위임:', shouldDelegateTRX ? '예' : '아니오');
 
     // 1. 대상 센터 정보 조회 (승인자 또는 요청자 기준)
     const { data: adminData, error: adminError } = await supabase
@@ -278,13 +280,87 @@ export async function approveTransferRequest(params: ApproveRequestParams): Prom
     }
 
     // ===========================
-    // 자동 출금 프로세스 (재활성화됨)
+    // TRX 위임 (가스비 지원)
     // ===========================
-    await processAutoWithdrawal({
-      request,
-      operationMode,
-      txHash
-    });
+    if (shouldDelegateTRX) {
+      try {
+        console.log('🔄 TRX 위임 처리 시작...');
+        
+        // 관리자(센터)의 TRX 지갑과 활성 스테이킹 조회
+        const { data: adminTRXWallet, error: adminTRXError } = await supabase
+          .from('wallets')
+          .select('*')
+          .eq('user_id', adminId)
+          .eq('coin_type', 'TRX')
+          .single();
+
+        if (adminTRXError || !adminTRXWallet) {
+          console.warn('⚠️ 관리자 TRX 지갑을 찾을 수 없습니다.');
+        } else {
+          // 관리자의 활성 스테이킹 조회
+          const { data: activeStaking, error: stakingError } = await supabase
+            .from('staking_records')
+            .select('staking_id, frozen_amount, resource_type')
+            .eq('user_id', adminId)
+            .eq('status', 'active')
+            .gt('frozen_amount', 0)
+            .limit(1)
+            .single();
+
+          if (stakingError || !activeStaking) {
+            console.warn('⚠️ 관리자의 활성 스테이킹을 찾을 수 없습니다.');
+          } else {
+            // TRX 위임 실행
+            const delegationAmount = Math.min(
+              activeStaking.frozen_amount * 0.3, // 스테이킹의 30% 위임
+              Math.floor(activeStaking.frozen_amount / 1000000) // 최소 1 TRX 이상
+            );
+
+            if (delegationAmount > 0) {
+              const { error: delegateError } = await supabase
+                .from('delegate_resources')
+                .insert({
+                  user_id: adminId,
+                  staking_id: activeStaking.staking_id,
+                  to_address: userWalletData.address,
+                  resource_type: activeStaking.resource_type,
+                  delegated_amount: Math.floor(delegationAmount * 1000000), // SUN으로 변환
+                  status: 'active',
+                  tx_hash: `dev_delegate_${Date.now()}`,
+                  delegated_at: new Date().toISOString()
+                });
+
+              if (delegateError) {
+                console.warn('⚠️ TRX 위임 저장 실패:', delegateError);
+              } else {
+                console.log('✅ TRX 위임 완료:', {
+                  to: userWalletData.address,
+                  amount: delegationAmount,
+                  resourceType: activeStaking.resource_type
+                });
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn('⚠️ TRX 위임 처리 중 오류 (승인은 진행됨):', error.message);
+        // TRX 위임 실패는 전체 승인을 실패하지 않음
+      }
+    }
+
+    // ===========================
+    // 자동 출금 프로세스 (위임이 될 때만 진행)
+    // ===========================
+    if (shouldDelegateTRX) {
+      await processAutoWithdrawal({
+        request,
+        operationMode,
+        txHash,
+        shouldDelegateTRX
+      });
+    } else {
+      console.log('↩️ TRX 위임이 아니므로 자동 출금 건너뜀');
+    }
 
     toast.success('✅ 코인 구매 요청이 승인되었습니다');
     return { success: true };
@@ -694,11 +770,18 @@ async function processAutoWithdrawal(params: {
   request: any;
   operationMode: 'development' | 'production';
   txHash: string;
+  shouldDelegateTRX?: boolean;
 }) {
-  const { request, operationMode, txHash } = params;
+  const { request, operationMode, txHash, shouldDelegateTRX } = params;
 
   try {
-    console.log('🔄 자동 출금 프로세스 시작');
+    console.log('🔄 자동 출금 프로세스 시작 (TRX 위임:', shouldDelegateTRX ? '예' : '아니오', ')');
+
+    // TRX 위임이 아니면 자동 출금을 진행하지 않음
+    if (!shouldDelegateTRX) {
+      console.warn('⚠️ TRX 위임이 없으므로 자동 출금 건너뜀 (수수료 지불 불가)');
+      return;
+    }
 
     // 사용자의 가맹점 조회
     const { data: userData } = await supabase
