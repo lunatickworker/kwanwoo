@@ -2,6 +2,7 @@ import { supabase } from './supabase/client';
 import { SUPABASE_CONFIG } from './config';
 import { toast } from 'sonner@2.0.3';
 import { getCenterOperationMode, sendProductionTransaction, generateDevTxHash } from './blockchain/centerModeHelper';
+import { decryptPrivateKey } from './crypto/keyDecryption';
 
 interface ApproveRequestParams {
   request: {
@@ -327,21 +328,44 @@ export async function approveTransferRequest(params: ApproveRequestParams): Prom
                 console.log('🔵 프로덕션 모드: 실제 TRON 위임 처리');
                 
                 try {
+                  const TronWeb = require('tronweb');
+                  const tronweb = new TronWeb({
+                    fullHost: 'https://api.trongrid.io',
+                    headers: { 'TRON-PRO-API-KEY': process.env.TRON_API_KEY || '' }
+                  });
+
                   // 관리자의 TRON 지갑 정보 조회
-                  const { data: adminPrivateKey, error: keyError } = await supabase
+                  const { data: walletData, error: walletError } = await supabase
                     .from('wallets')
-                    .select('encrypted_private_key')
+                    .select('encrypted_private_key, address')
                     .eq('wallet_id', adminTRXWallet.wallet_id)
                     .single();
 
-                  if (keyError || !adminPrivateKey?.encrypted_private_key) {
-                    throw new Error('관리자 TRON 지갑의 Private Key를 찾을 수 없습니다');
+                  if (walletError || !walletData?.encrypted_private_key || !walletData?.address) {
+                    throw new Error('관리자 TRON 지갑 정보를 찾을 수 없습니다');
                   }
 
-                  // TRON 위임 처리 (향후 Tron.js를 통한 실제 구현)
-                  // TODO: Tron.js의 delegateResource 메서드 호출
-                  delegateTxHash = `tron_delegate_${Date.now()}`; // 임시
-                  console.log('✅ TRON 위임 요청 완료');
+                  // Private Key 복호화
+                  const adminPrivateKey = decryptPrivateKey(walletData.encrypted_private_key);
+                  
+                  // 0x 프리픽스 추가 (없으면)
+                  const privateKeyWithPrefix = adminPrivateKey.startsWith('0x')
+                    ? adminPrivateKey
+                    : '0x' + adminPrivateKey;
+
+                  tronweb.setPrivateKey(privateKeyWithPrefix);
+
+                  // TRON delegateResource 호출
+                  const delegationResult = await tronweb.trx.sendTransaction({
+                    to: userWalletData.address,
+                    from: walletData.address,
+                    amount: Math.floor(delegationAmount * 1000000), // SUN 단위
+                    tokenID: 'TRX',
+                    tokenValue: Math.floor(delegationAmount * 1000000)
+                  });
+
+                  delegateTxHash = delegationResult.txid || `tron_delegate_${Date.now()}`;
+                  console.log('✅ TRON 위임 완료:', delegateTxHash);
                 } catch (tronError: any) {
                   console.warn('⚠️ TRON 위임 처리 실패:', tronError.message);
                   delegateTxHash = `failed_delegate_${Date.now()}`;
