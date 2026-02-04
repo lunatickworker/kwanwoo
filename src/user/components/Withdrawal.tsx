@@ -8,6 +8,7 @@ import { useWallet } from '../../hooks/useWallet';
 import { biconomyClient } from '../../utils/biconomy/client';
 import { getGasPolicyForUser, getGasPolicyDescription, getLevelBadgeColor, GasPaymentConfig } from '../../utils/biconomy/gasPolicy';
 import { composeBiconomyTransaction, checkBiconomyAvailability } from '../../utils/api/biconomy';
+import { executeUserWithdrawal, estimateWithdrawalFee } from '../../utils/withdrawalHelper';
 
 interface WithdrawalProps {
   wallets: WalletData[];
@@ -139,25 +140,11 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
 
   // 실시간 출금 내역 업데이트
   useEffect(() => {
-    const fetchRecentWithdrawals = async () => {
-      const { data } = await supabase
-        .from('withdrawals')
-        .select('*')
-        .eq('user_id', user?.id)
-        .eq('coin_type', selectedCoin)
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (data) {
-        setRecentWithdrawals(data);
-      }
-    };
-
     fetchRecentWithdrawals();
-
-    // 실시간 업데이트
+    
+    // 실시간 구독
     const channel = supabase
-      .channel('withdrawal-changes')
+      .channel(`user-withdrawals-${user?.id}`)
       .on(
         'postgres_changes',
         {
@@ -167,16 +154,7 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
           filter: `user_id=eq.${user?.id}`
         },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            toast.success('출금 요청이 접수되었습니다');
-          } else if (payload.eventType === 'UPDATE') {
-            const status = (payload.new as any).status;
-            if (status === 'completed') {
-              toast.success('출금이 완료되었습니다!');
-            } else if (status === 'rejected') {
-              toast.error('출금이 거부되었습니다');
-            }
-          }
+          console.log('출금 상태 변경:', payload);
           fetchRecentWithdrawals();
         }
       )
@@ -185,7 +163,7 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, selectedCoin]);
+  }, [user?.id]);
 
   // 가스비 견적 계산
   useEffect(() => {
@@ -243,98 +221,64 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
     setIsLoading(true);
 
     try {
-      // 1. TRON 네트워크 가스비 지원 여부 확인 (모든 출금에 적용)
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('gas_sponsor_enabled')
-        .eq('user_id', user?.id)
-        .single();
+      console.log('🔄 사용자 출금 시작:', {
+        walletId: selectedWallet.wallet_id,
+        coinType: selectedCoin,
+        amount: amountNum,
+        toAddress
+      });
 
-      if (userError) {
-        console.error('사용자 정보 조회 실패:', userError);
-        toast.error('사용자 정보를 확인할 수 없습니다');
-        setIsLoading(false);
+      // 실제 블록체인 출금 실행
+      const result = await executeUserWithdrawal({
+        userId: user?.id!,
+        walletId: selectedWallet.wallet_id,
+        coinType: selectedCoin as string,
+        amount: amountNum,
+        toAddress
+      });
+
+      if (!result.success) {
+        toast.error(result.error || '출금 처리 중 오류가 발생했습니다');
         return;
       }
 
-      if (!userData?.gas_sponsor_enabled) {
-        toast.error('가스비 지원이 비활성화되어 출금이 제한됩니다. 관리자에게 문의하세요.');
-        setIsLoading(false);
-        return;
-      }
+      // 성공
+      toast.success(`✅ 출금 완료!\nTX: ${result.txHash?.substring(0, 10)}...`);
 
-      console.log('✅ TRON 가스비 지원 확인됨:', userData.gas_sponsor_enabled);
-
-      if (useSupertransaction) {
-        // 2. Biconomy (Ethereum) 시스템 사용 가능 여부 확인
-        const availability = await checkBiconomyAvailability();
-        if (!availability.available) {
-          toast.error(availability.message);
-          setIsLoading(false);
-          return;
-        }
-
-        console.log('✅ Biconomy (Ethereum USDT 가스비) 사용 가능');
-
-        // Supertransaction API 사용
-        // 1. Compose
-        const { payload, quote } = await composeBiconomyTransaction({
-          chainId: 8453, // Base
-          from: selectedWallet.address,
-          steps: [
-            {
-              type: 'transfer',
-              token: selectedCoin,
-              to: toAddress,
-              amount: amount
-            }
-          ],
-          gasPayment: gasPaymentConfig || { sponsor: false, token: 'USDC' }
-        });
-
-        // 2. DB에 출금 요청 저장 (pending 상태)
-        const { error: insertError } = await supabase
-          .from('withdrawals')
-          .insert({
-            user_id: user?.id,
-            wallet_id: selectedWallet.wallet_id,
-            coin_type: selectedCoin,
-            amount: amount,
-            to_address: toAddress,
-            status: 'processing',  // 즉시 처리 시작
-            supertransaction_payload: payload,
-            gas_quote: quote
-          });
-
-        if (insertError) throw insertError;
-
-        toast.success('출금이 진행중입니다. 잠시 후 완료됩니다.');
-      } else {
-        // 일반 출금
-        const { error } = await supabase
-          .from('withdrawals')
-          .insert({
-            user_id: user?.id,
-            wallet_id: selectedWallet.wallet_id,
-            coin_type: selectedCoin,
-            amount: amount,
-            to_address: toAddress,
-            status: 'processing'  // 즉시 처리 시작
-          });
-
-        if (error) throw error;
-        toast.success('출금이 진행중입니다. 잠시 후 완료됩니다.');
-      }
-
-      // 초기화
+      // UI 초기화
       setToAddress('');
       setAmount('');
       setGasQuote(null);
+
+      // 최근 출금 목록 갱신
+      setTimeout(() => {
+        fetchRecentWithdrawals();
+      }, 1000);
+
     } catch (error: any) {
       console.error('Withdrawal error:', error);
       toast.error(error.message || '출금 요청 중 오류가 발생했습니다');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchRecentWithdrawals = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const { data } = await supabase
+        .from('withdrawals')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (data) {
+        setRecentWithdrawals(data);
+      }
+    } catch (error) {
+      console.error('Error fetching withdrawals:', error);
     }
   };
 

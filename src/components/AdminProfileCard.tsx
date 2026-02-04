@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Wallet, Plus, X, RefreshCw, TrendingUp, TrendingDown, Copy, Check, Trash2, Send } from 'lucide-react';
+import { Wallet, Plus, X, RefreshCw, TrendingUp, TrendingDown, Copy, Check, Trash2, Send, ArrowUpRight, AlertCircle, Loader2 } from 'lucide-react';
 import { supabase } from '../utils/supabase/client';
 import { toast } from 'sonner@2.0.3';
 import { useAuth } from '../contexts/AuthContext';
 import { CoinSaleRequest } from './CoinSaleRequest';
 import { useBlockchainSync } from '../hooks/useBlockchainSync';
+import { executeWithdrawal } from '../utils/withdrawalHelper';
 
 interface WalletInfo {
   wallet_id: string;
@@ -33,6 +34,14 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null);
   const [showCoinSaleRequest, setShowCoinSaleRequest] = useState(false);
+
+  // 출금 관련 상태
+  const [showWithdrawForm, setShowWithdrawForm] = useState(false);
+  const [withdrawingWallet, setWithdrawingWallet] = useState<WalletInfo | null>(null);
+  const [withdrawToAddress, setWithdrawToAddress] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+
   const { startMonitoring } = useBlockchainSync({
     onSuccess: () => {
       console.log('✅ 프로필 잔액 동기화 완료');
@@ -313,6 +322,60 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
     }
   };
 
+  const handleWithdraw = async () => {
+    if (!withdrawingWallet || !withdrawToAddress || !withdrawAmount) {
+      toast.error('모든 필드를 입력해주세요');
+      return;
+    }
+
+    const amount = parseFloat(withdrawAmount);
+    if (amount <= 0 || amount > withdrawingWallet.balance) {
+      toast.error('유효하지 않은 출금액입니다');
+      return;
+    }
+
+    if (!withdrawToAddress.match(/^[a-zA-Z0-9]{20,}$/)) {
+      toast.error('유효한 지갑 주소를 입력해주세요');
+      return;
+    }
+
+    setIsWithdrawing(true);
+
+    try {
+      // 통합 출금 함수 사용
+      const result = await executeWithdrawal({
+        withdrawalType: 'admin',
+        adminId: user?.id!,
+        adminRole: (user?.role || 'center') as any,
+        walletId: withdrawingWallet.wallet_id,
+        coinType: withdrawingWallet.coin_type,
+        amount: amount,
+        toAddress: withdrawToAddress
+      });
+
+      if (!result.success) {
+        toast.error(result.error || '출금 처리 중 오류가 발생했습니다');
+        return;
+      }
+
+      // 성공
+      toast.success(`✅ 출금 완료!\nTX: ${result.txHash?.substring(0, 10)}...`);
+
+      // UI 초기화
+      setWithdrawToAddress('');
+      setWithdrawAmount('');
+      setShowWithdrawForm(false);
+      setWithdrawingWallet(null);
+      fetchWallets();
+
+    } catch (error: any) {
+      console.error('출금 오류:', error);
+      toast.error(error.message || '출금 처리 중 오류가 발생했습니다');
+    } finally {
+      setIsWithdrawing(false);
+    }
+  };
+
   const totalValueKRW = wallets.reduce((sum, w) => {
     return sum + (w.balance * (w.price_krw || 0));
   }, 0);
@@ -531,6 +594,18 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
                           </div>
                         )}
                         
+                        {/* 출금 버튼 */}
+                        <button
+                          onClick={() => {
+                            setWithdrawingWallet(wallet);
+                            setShowWithdrawForm(true);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+                          title="코인 출금"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                        
                         {/* 휴지통 아이콘 */}
                         <button
                           onClick={(e) => handleDeleteWallet(wallet.wallet_id, wallet.coin_type, e)}
@@ -577,6 +652,105 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
             fetchWallets();
           }}
         />
+      )}
+
+      {/* 출금 폼 모달 */}
+      {showWithdrawForm && withdrawingWallet && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold text-slate-200 mb-4">
+              {withdrawingWallet.coin_type} 출금
+            </h3>
+
+            <div className="space-y-4">
+              {/* 보유량 표시 */}
+              <div className="bg-slate-700/30 border border-slate-600 rounded p-3">
+                <p className="text-xs text-slate-400 mb-1">보유량</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-slate-200 font-semibold">
+                    {withdrawingWallet.balance.toLocaleString(undefined, { maximumFractionDigits: 8 })} {withdrawingWallet.coin_type}
+                  </p>
+                  <button
+                    onClick={() => setWithdrawAmount(withdrawingWallet.balance.toString())}
+                    className="text-xs px-2 py-1 bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 rounded transition-colors"
+                  >
+                    전액
+                  </button>
+                </div>
+              </div>
+
+              {/* 받을 주소 입력 */}
+              <div>
+                <label className="block text-sm text-slate-300 mb-2">받을 지갑 주소</label>
+                <input
+                  type="text"
+                  placeholder="지갑 주소 입력"
+                  value={withdrawToAddress}
+                  onChange={(e) => setWithdrawToAddress(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+
+              {/* 출금액 입력 */}
+              <div>
+                <label className="block text-sm text-slate-300 mb-2">출금액</label>
+                <input
+                  type="number"
+                  placeholder="출금할 수량"
+                  value={withdrawAmount}
+                  onChange={(e) => setWithdrawAmount(e.target.value)}
+                  step="any"
+                  min="0"
+                  max={withdrawingWallet.balance}
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+
+              {/* 경고 알림 */}
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 flex gap-2">
+                <AlertCircle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs text-yellow-300">
+                    출금 후 취소할 수 없습니다. 주소를 정확히 확인해주세요.
+                  </p>
+                </div>
+              </div>
+
+              {/* 버튼 */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setShowWithdrawForm(false);
+                    setWithdrawToAddress('');
+                    setWithdrawAmount('');
+                    setWithdrawingWallet(null);
+                  }}
+                  disabled={isWithdrawing}
+                  className="flex-1 px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleWithdraw}
+                  disabled={isWithdrawing || !withdrawToAddress || !withdrawAmount}
+                  className="flex-1 px-3 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isWithdrawing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      처리 중...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      출금 실행
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Building2, Settings, Globe, Users, TrendingUp, DollarSign, Coins, Zap, Shield } from "lucide-react";
+import { Building2, Settings, Globe, Users, TrendingUp, DollarSign, Coins, Zap, Shield, ArrowUpRight } from "lucide-react";
 import { CenterManagementCompact } from "./master/CenterManagementCompact";
 import { MasterDashboard } from "./master/MasterDashboard";
 import { DomainManagement } from "./admin/DomainManagement";

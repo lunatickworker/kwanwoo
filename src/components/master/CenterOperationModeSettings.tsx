@@ -77,12 +77,20 @@ export function CenterOperationModeSettings() {
         operation_mode: newMode
       };
 
-      const { error } = await supabase
+      const { error: userError } = await supabase
         .from('users')
         .update({ metadata: updatedMetadata })
         .eq('user_id', centerId);
 
-      if (error) throw error;
+      if (userError) throw userError;
+
+      // centers 테이블의 operation_mode도 업데이트 (make-server에서 실제 실행 여부 결정)
+      const { error: centerError } = await supabase
+        .from('centers')
+        .update({ operation_mode: newMode })
+        .eq('user_id', centerId);
+
+      if (centerError) throw centerError;
 
       // 로컬 상태 업데이트
       setCenters(centers.map(c => 
