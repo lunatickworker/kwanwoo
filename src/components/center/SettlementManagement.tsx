@@ -180,7 +180,9 @@ export function SettlementManagement() {
       }
       if (!user) return;
 
-      console.time('⏱️ 센터 정산 데이터 조회');
+      if (!isAutoRefresh) {
+        console.time('⏱️ 센터 정산 데이터 조회');
+      }
 
       // Step 0: 센터 정보 조회 (수수료율)
       const { data: centerData } = await supabase
@@ -194,9 +196,13 @@ export function SettlementManagement() {
       }
 
       // Step 1: 가맹점 및 계층 구조를 한 번에 조회 (최적화)
-      console.time('1. 가맹점 계층 구조 조회');
+      if (!isAutoRefresh) {
+        console.time('1. 가맹점 계층 구조 조회');
+      }
       const storesWithHierarchy = await getStoresWithHierarchy(user.id);
-      console.timeEnd('1. 가맹점 계층 구조 조회');
+      if (!isAutoRefresh) {
+        console.timeEnd('1. 가맹점 계층 구조 조회');
+      }
 
       if (storesWithHierarchy.length === 0) {
         setSettlements([]);
@@ -277,7 +283,9 @@ export function SettlementManagement() {
 
         setDailySummaries(dailyData);
 
-        console.timeEnd('⏱️ 센터 정산 데이터 조회');
+        if (!isAutoRefresh) {
+          console.timeEnd('⏱️ 센터 정산 데이터 조회');
+        }
       }
 
     } catch (error) {
