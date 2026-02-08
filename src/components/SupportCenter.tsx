@@ -483,16 +483,17 @@ export function SupportCenter() {
                   >
                     <div className="relative">
                       <div
-                        className={`max-w-[70%] rounded-2xl px-4 py-3 ${
+                        className={`rounded-2xl px-4 py-3 ${
                           msg.sender_type === 'admin'
                             ? 'bg-gradient-to-r from-cyan-500 to-purple-500 text-white'
                             : 'bg-slate-700 text-slate-200 border border-slate-600'
                         }`}
+                        style={{ width: 'fit-content' }}
                       >
                         {msg.sender_type === 'user' && (
                           <p className="text-xs text-cyan-400 mb-1">{displayName}</p>
                         )}
-                        <p className="text-sm break-words">{msg.message}</p>
+                        <p className="text-sm" style={{ width: '14ch', wordWrap: 'break-word', overflow: 'hidden' }}>{msg.message}</p>
                         <p
                           className={`text-xs mt-1 ${
                             msg.sender_type === 'admin' ? 'text-cyan-100' : 'text-slate-500'
