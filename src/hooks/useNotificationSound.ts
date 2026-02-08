@@ -37,8 +37,9 @@ export function useNotificationSound({ notifications, enabled }: UseNotification
   const prevEnabledRef = useRef(enabled); // 이전 enabled 상태 추적
 
   // 읽지 않은 알림 중 가장 최근 것 찾기
+  // 읽지 않은 알림 찾기
   const getLatestUnreadNotification = (): Notification | null => {
-    const unreadNotifications = notifications.filter(n => !n.read);
+    const unreadNotifications = notifications.filter(n => !n.is_read);
     if (unreadNotifications.length === 0) return null;
     
     // 가장 최근 알림 반환
@@ -149,6 +150,14 @@ export function useNotificationSound({ notifications, enabled }: UseNotification
     }
 
     console.log('🔔 Latest unread notification:', latestUnread.id, latestUnread.type);
+
+    // 초기화 여부 확인 - 처음 로드 시에는 기존 unread 알림을 재생하지 않음
+    if (!isInitializedRef.current) {
+      console.log('📌 Initial load - skipping sound playback for existing notifications');
+      setLastPlayedNotificationId(latestUnread.id);
+      isInitializedRef.current = true;
+      return;
+    }
 
     // 새로운 읽지 않은 알림이면 즉시 재생 (마지막 재생한 ID와 다른 경우)
     if (latestUnread.id !== lastPlayedNotificationId) {

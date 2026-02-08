@@ -45,17 +45,51 @@ export function SupportCenter() {
       if (!admin?.id || !admin?.role) return;
 
       try {
-        // 계층 구조에 따라 하위 사용자 ID 조회
-        const hierarchyUserIds = await getHierarchyUserIds(admin.id, admin.role);
+        console.log('🔐 [SupportCenter] 조직 격리 시작:', {
+          admin_id: admin.id.substring(0, 8) + '...',
+          admin_role: admin.role
+        });
 
-        // 1. 하위 사용자들의 메시지만 가져오기
-        const { data: allMessages } = await supabase
+        // 권한에 따라 조회 범위 결정
+        let allowedUserIds: string[] = [];
+        
+        if (admin.role === 'master') {
+          // Master: 모든 support_messages 조회 (제약 없음)
+          console.log('👑 Master 권한: 모든 메시지 조회');
+          allowedUserIds = []; // 빈 배열 = 제약 없음
+        } else {
+          // 그 외(center, agency, store): 계층 구조 기반 조회
+          allowedUserIds = await getHierarchyUserIds(admin.id, admin.role);
+          console.log(`🔍 ${admin.role} 권한:`, {
+            계층구조사용자수: allowedUserIds.length,
+            사용자ID목록: allowedUserIds.map(id => id.substring(0, 8) + '...')
+          });
+        }
+
+        // 1. 메시지 조회 (권한에 따라 필터링)
+        let messageQuery = supabase
           .from('support_messages')
           .select('*')
-          .in('user_id', hierarchyUserIds)
           .order('created_at', { ascending: false });
+        
+        // Master가 아니면 사용자 필터링 (조직 격리)
+        if (allowedUserIds.length > 0) {
+          messageQuery = messageQuery.in('user_id', allowedUserIds);
+        }
+        
+        const { data: allMessages, error } = await messageQuery;
 
-        if (!allMessages) return;
+        console.log('📊 조회 결과:', {
+          메시지수: allMessages?.length || 0,
+          에러여부: !!error,
+          에러메시지: error?.message
+        });
+        
+        if (!allMessages || allMessages.length === 0) {
+          console.log('⚠️ 메시지 없음 - 사용자 채팅 목록 비움');
+          setUserChats([]);
+          return;
+        }
 
         // 2. 고유한 user_id 추출
         const uniqueUserIds = [...new Set(allMessages.map(msg => msg.user_id))];
@@ -148,6 +182,11 @@ export function SupportCenter() {
         },
         (payload) => {
           const msg = payload.new as Message;
+          console.log('🔔 새 메시지 감지:', {
+            user_id: msg.user_id.substring(0, 8) + '...',
+            sender_type: msg.sender_type,
+            message: msg.message.substring(0, 30) + '...'
+          });
           if (msg.sender_type === 'user') {
             toast.success(`새 문의가 도착했습니다`);
           }
@@ -295,6 +334,28 @@ export function SupportCenter() {
     }
   };
 
+  // 메시지별 삭제 (관리자만)
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!confirm('이 메시지를 삭제하시겠습니까?')) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('support_messages')
+        .delete()
+        .eq('message_id', messageId);
+
+      if (error) throw error;
+
+      setMessages(prev => prev.filter(m => m.message_id !== messageId));
+      toast.success('메시지가 삭제되었습니다');
+    } catch (error) {
+      console.error('Delete message error:', error);
+      toast.error('메시지 삭제에 실패했습니다');
+    }
+  };
+
   const filteredChats = userChats.filter(
     chat =>
       chat.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -418,31 +479,42 @@ export function SupportCenter() {
                 return (
                   <div
                     key={msg.message_id}
-                    className={`flex ${msg.sender_type === 'admin' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex ${msg.sender_type === 'admin' ? 'justify-end' : 'justify-start'} group`}
                   >
-                    <div
-                      className={`max-w-[70%] rounded-2xl px-4 py-3 ${
-                        msg.sender_type === 'admin'
-                          ? 'bg-gradient-to-r from-cyan-500 to-purple-500 text-white'
-                          : 'bg-slate-700 text-slate-200 border border-slate-600'
-                      }`}
-                    >
-                      {msg.sender_type === 'user' && (
-                        <p className="text-xs text-cyan-400 mb-1">{displayName}</p>
-                      )}
-                      <p className="text-sm break-words">{msg.message}</p>
-                      <p
-                        className={`text-xs mt-1 ${
-                          msg.sender_type === 'admin' ? 'text-cyan-100' : 'text-slate-500'
+                    <div className="relative">
+                      <div
+                        className={`max-w-[70%] rounded-2xl px-4 py-3 ${
+                          msg.sender_type === 'admin'
+                            ? 'bg-gradient-to-r from-cyan-500 to-purple-500 text-white'
+                            : 'bg-slate-700 text-slate-200 border border-slate-600'
                         }`}
                       >
-                        {new Date(msg.created_at).toLocaleString('ko-KR', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </p>
+                        {msg.sender_type === 'user' && (
+                          <p className="text-xs text-cyan-400 mb-1">{displayName}</p>
+                        )}
+                        <p className="text-sm break-words">{msg.message}</p>
+                        <p
+                          className={`text-xs mt-1 ${
+                            msg.sender_type === 'admin' ? 'text-cyan-100' : 'text-slate-500'
+                          }`}
+                        >
+                          {new Date(msg.created_at).toLocaleString('ko-KR', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      </div>
+
+                      {/* 메시지 삭제 버튼 (관리자만, hover시 표시) */}
+                      <button
+                        onClick={() => handleDeleteMessage(msg.message_id)}
+                        className="absolute -right-10 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/50"
+                        title="메시지 삭제"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                      </button>
                     </div>
                   </div>
                 );

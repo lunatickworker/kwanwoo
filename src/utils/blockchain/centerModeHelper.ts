@@ -27,11 +27,14 @@ export async function getCenterOperationMode(userId: string): Promise<'developme
 }
 
 interface BlockchainTransactionParams {
-  centerId: string;
+  centerId?: string;
   toAddress: string;
-  coinType: string;
+  coinType?: string;
   amount: string;
-  adminId: string;
+  adminId?: string;
+  storeId?: string; // OFF일 때 가맹점의 가스비 확인용
+  gasSponsorEnabled?: boolean; // true: 센터가 가스비 지원, false: 가맹점이 가스비 부담
+  [key: string]: any; // 기타 프로퍼티
 }
 
 interface BlockchainTransactionResult {

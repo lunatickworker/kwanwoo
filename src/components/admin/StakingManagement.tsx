@@ -78,6 +78,8 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
   const [delegateToAddress, setDelegateToAddress] = useState<string>('');
   const [delegateResourceType, setDelegateResourceType] = useState<'ENERGY' | 'BANDWIDTH'>('ENERGY');
   const [delegateAmount, setDelegateAmount] = useState<string>('');
+  const [delegationsLoading, setDelegationsLoading] = useState(false);
+  const [delegationsError, setDelegationsError] = useState<string | null>(null);
 
   // 지갑 주소 및 잔액 조회
   useEffect(() => {
@@ -160,22 +162,60 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
   const fetchDelegations = async () => {
     if (!centerId) return;
 
+    setDelegationsLoading(true);
+    setDelegationsError(null);
+
     try {
-      // 위임한 리소스
-      const delegResponse = await fetch(`/api/staking/delegations/${centerId}`);
+      const baseUrl = 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f';
+      const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI';
+      
+      const headers = {
+        'Authorization': `Bearer ${anonKey}`,
+        'Content-Type': 'application/json'
+      };
+      
+      // 위임한 리소스 (make-server-b6d5667f 중복 제거)
+      const delegResponse = await fetch(`${baseUrl}/staking/delegations/${centerId}`, { headers });
+      
       if (delegResponse.ok) {
-        const delegData = await delegResponse.json();
-        setDelegations(delegData.delegations || []);
+        const contentType = delegResponse.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const delegData = await delegResponse.json();
+          setDelegations(delegData.delegations || []);
+        } else {
+          const text = await delegResponse.text();
+          console.warn('위임한 리소스 조회 응답:', text.substring(0, 200));
+          setDelegationsError('위임한 리소스 조회 실패 (잘못된 응답 형식)');
+        }
+      } else {
+        const text = await delegResponse.text();
+        console.warn('위임한 리소스 조회 실패:', delegResponse.status, text.substring(0, 200));
+        setDelegationsError(`위임한 리소스 조회 실패 (${delegResponse.status})`);
       }
 
-      // 받은 위임
-      const receivedResponse = await fetch(`/api/staking/received-delegations/${centerId}`);
+      // 받은 위임 (make-server-b6d5667f 중복 제거)
+      const receivedResponse = await fetch(`${baseUrl}/staking/received-delegations/${centerId}`, { headers });
+      
       if (receivedResponse.ok) {
-        const receivedData = await receivedResponse.json();
-        setReceivedDelegations(receivedData.received_delegations || []);
+        const contentType = receivedResponse.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const receivedData = await receivedResponse.json();
+          setReceivedDelegations(receivedData.received_delegations || []);
+        } else {
+          const text = await receivedResponse.text();
+          console.warn('받은 위임 조회 응답:', text.substring(0, 200));
+          setDelegationsError('받은 위임 조회 실패 (잘못된 응답 형식)');
+        }
+      } else {
+        const text = await receivedResponse.text();
+        console.warn('받은 위임 조회 실패:', receivedResponse.status, text.substring(0, 200));
+        setDelegationsError(`받은 위임 조회 실패 (${receivedResponse.status})`);
       }
     } catch (err) {
       console.error('위임 정보 조회 실패:', err);
+      setDelegationsError('위임 정보 조회 실패: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setDelegationsLoading(false);
     }
   };
 
@@ -198,7 +238,7 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
 
     setLoading(true);
     try {
-      const response = await fetch('/api/staking/delegate', {
+      const response = await fetch('/functions/make-server-b6d5667f/staking/delegate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -210,8 +250,10 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
         }),
       });
 
+      const result = await response.json();
+
       if (!response.ok) {
-        throw new Error('위임 실행 실패');
+        throw new Error(result.error || '위임 실행 실패');
       }
 
       setMessage({
@@ -243,14 +285,16 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
 
     setLoading(true);
     try {
-      const response = await fetch('/api/staking/undelegate', {
+      const response = await fetch('/functions/make-server-b6d5667f/staking/undelegate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ delegation_id: delegationId }),
       });
 
+      const result = await response.json();
+
       if (!response.ok) {
-        throw new Error('위임 취소 실패');
+        throw new Error(result.error || '위임 취소 실패');
       }
 
       setMessage({
@@ -317,7 +361,7 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
       });
 
       // 엣지 펑션으로 실제 스테이킹 실행 요청
-      const response = await fetch('/api/staking/execute', {
+      const response = await fetch('/functions/make-server-b6d5667f/staking/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -365,7 +409,7 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
       if (updateError) throw updateError;
 
       // 엣지 펑션으로 언스테이킹 실행 요청
-      const response = await fetch('/api/staking/unfreeze', {
+      const response = await fetch('/functions/make-server-b6d5667f/staking/unfreeze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -731,7 +775,25 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
             </button>
           </div>
 
-          {delegations.length === 0 ? (
+          {delegationsLoading ? (
+            <NeonCard>
+              <p className="text-slate-400 text-center py-8">위임 정보를 불러오는 중...</p>
+            </NeonCard>
+          ) : delegationsError ? (
+            <NeonCard>
+              <div className="text-center py-8">
+                <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                <p className="text-red-400 mb-2">위임 정보 조회 실패</p>
+                <p className="text-slate-400 text-sm">{delegationsError}</p>
+                <button
+                  onClick={() => fetchDelegations()}
+                  className="mt-4 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-all"
+                >
+                  다시 시도
+                </button>
+              </div>
+            </NeonCard>
+          ) : delegations.length === 0 ? (
             <NeonCard>
               <p className="text-slate-400 text-center py-8">위임한 리소스가 없습니다</p>
             </NeonCard>
@@ -752,7 +814,7 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
                     {delegations.map((d) => (
                       <tr key={d.delegation_id} className="hover:bg-slate-800/30 transition-colors">
                         <td className="px-4 py-3 text-slate-300 font-mono text-xs">
-                          {d.to_address.substring(0, 10)}...{d.to_address.substring(-6)}
+                          {d.to_address.substring(0, 10)}...{d.to_address.substring(d.to_address.length - 6)}
                         </td>
                         <td className="px-4 py-3 text-slate-300">
                           <span className={`px-2 py-1 rounded text-xs font-semibold ${
@@ -795,75 +857,97 @@ const StakingManagement: React.FC<{ centerId?: string; centerAddress?: string }>
         <>
           <h3 className="text-cyan-400 text-lg font-semibold">받은 리소스</h3>
 
-          <NeonCard>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-800/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm mb-2">총 ENERGY</p>
-                <p className="text-purple-400 text-2xl font-bold">
-                  {(receivedDelegations
-                    .filter(d => d.resource_type === 'ENERGY')
-                    .reduce((sum, d) => sum + d.amount_trx, 0)
-                  ).toFixed(2)}
-                </p>
-                <p className="text-slate-500 text-xs mt-1">TRX</p>
-              </div>
-
-              <div className="bg-slate-800/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm mb-2">총 BANDWIDTH</p>
-                <p className="text-blue-400 text-2xl font-bold">
-                  {(receivedDelegations
-                    .filter(d => d.resource_type === 'BANDWIDTH')
-                    .reduce((sum, d) => sum + d.amount_trx, 0)
-                  ).toFixed(2)}
-                </p>
-                <p className="text-slate-500 text-xs mt-1">TRX</p>
-              </div>
-            </div>
-          </NeonCard>
-
-          {receivedDelegations.length === 0 ? (
+          {delegationsLoading ? (
             <NeonCard>
-              <p className="text-slate-400 text-center py-8">받은 리소스가 없습니다</p>
+              <p className="text-slate-400 text-center py-8">위임 정보를 불러오는 중...</p>
+            </NeonCard>
+          ) : delegationsError ? (
+            <NeonCard>
+              <div className="text-center py-8">
+                <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                <p className="text-red-400 mb-2">위임 정보 조회 실패</p>
+                <p className="text-slate-400 text-sm">{delegationsError}</p>
+                <button
+                  onClick={() => fetchDelegations()}
+                  className="mt-4 px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/50 text-cyan-400 rounded-lg transition-all"
+                >
+                  다시 시도
+                </button>
+              </div>
             </NeonCard>
           ) : (
-            <NeonCard>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-slate-700">
-                    <tr className="text-slate-400">
-                      <th className="px-4 py-3 text-left">위임자</th>
-                      <th className="px-4 py-3 text-left">리소스 타입</th>
-                      <th className="px-4 py-3 text-right">금액</th>
-                      <th className="px-4 py-3 text-left">위임 날짜</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700/50">
-                    {receivedDelegations.map((d) => (
-                      <tr key={d.delegation_id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="px-4 py-3 text-slate-300 font-mono text-xs">
-                          {d.from_user_id.substring(0, 10)}...
-                        </td>
-                        <td className="px-4 py-3 text-slate-300">
-                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                            d.resource_type === 'ENERGY'
-                              ? 'bg-purple-500/20 text-purple-400'
-                              : 'bg-blue-500/20 text-blue-400'
-                          }`}>
-                            {d.resource_type}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right text-cyan-400 font-semibold">
-                          {d.amount_trx.toFixed(2)} TRX
-                        </td>
-                        <td className="px-4 py-3 text-slate-400 text-xs">
-                          {new Date(d.delegated_at).toLocaleDateString('ko-KR')}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </NeonCard>
+            <>
+              <NeonCard>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-800/50 rounded-lg p-4">
+                    <p className="text-slate-400 text-sm mb-2">총 ENERGY</p>
+                    <p className="text-purple-400 text-2xl font-bold">
+                      {(receivedDelegations
+                        .filter(d => d.resource_type === 'ENERGY')
+                        .reduce((sum, d) => sum + d.amount_trx, 0)
+                      ).toFixed(2)}
+                    </p>
+                    <p className="text-slate-500 text-xs mt-1">TRX</p>
+                  </div>
+
+                  <div className="bg-slate-800/50 rounded-lg p-4">
+                    <p className="text-slate-400 text-sm mb-2">총 BANDWIDTH</p>
+                    <p className="text-blue-400 text-2xl font-bold">
+                      {(receivedDelegations
+                        .filter(d => d.resource_type === 'BANDWIDTH')
+                        .reduce((sum, d) => sum + d.amount_trx, 0)
+                      ).toFixed(2)}
+                    </p>
+                    <p className="text-slate-500 text-xs mt-1">TRX</p>
+                  </div>
+                </div>
+              </NeonCard>
+
+              {receivedDelegations.length === 0 ? (
+                <NeonCard>
+                  <p className="text-slate-400 text-center py-8">받은 리소스가 없습니다</p>
+                </NeonCard>
+              ) : (
+                <NeonCard>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="border-b border-slate-700">
+                        <tr className="text-slate-400">
+                          <th className="px-4 py-3 text-left">위임자</th>
+                          <th className="px-4 py-3 text-left">리소스 타입</th>
+                          <th className="px-4 py-3 text-right">금액</th>
+                          <th className="px-4 py-3 text-left">위임 날짜</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-700/50">
+                        {receivedDelegations.map((d) => (
+                          <tr key={d.delegation_id} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="px-4 py-3 text-slate-300 font-mono text-xs">
+                              {d.from_user_id.substring(0, 10)}...
+                            </td>
+                            <td className="px-4 py-3 text-slate-300">
+                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                                d.resource_type === 'ENERGY'
+                                  ? 'bg-purple-500/20 text-purple-400'
+                                  : 'bg-blue-500/20 text-blue-400'
+                              }`}>
+                                {d.resource_type}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-cyan-400 font-semibold">
+                              {d.amount_trx.toFixed(2)} TRX
+                            </td>
+                            <td className="px-4 py-3 text-slate-400 text-xs">
+                              {new Date(d.delegated_at).toLocaleDateString('ko-KR')}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </NeonCard>
+              )}
+            </>
           )}
         </>
       )}

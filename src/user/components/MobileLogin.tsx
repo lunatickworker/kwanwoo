@@ -1,18 +1,22 @@
 import { useState, useEffect } from 'react';
-import { Activity, Mail, Lock, LogIn, Eye, EyeOff, Sparkles, X } from 'lucide-react';
+import { Activity, Mail, Lock, LogIn, Eye, EyeOff, Sparkles, X, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { supabase } from '../../utils/supabase/client';
 import { checkEmailAvailability } from '../../utils/api/check-email';
 
-export function MobileLogin() {
+interface MobileLoginProps {
+  initialShowSignUp?: boolean;
+}
+
+export function MobileLogin({ initialShowSignUp = false }: MobileLoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
-  const [showSignUp, setShowSignUp] = useState(false);
+  const [showSignUp, setShowSignUp] = useState(initialShowSignUp);
   const [emailError, setEmailError] = useState(false);
   const [passwordError, setPasswordError] = useState(false);
   const [signUpData, setSignUpData] = useState({
@@ -36,6 +40,17 @@ export function MobileLogin() {
   } | null>(null);
   const [isCheckingReferral, setIsCheckingReferral] = useState(false);
   const { login } = useAuth();
+
+  // 추천인 코드 검증 디바운싱
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (signUpData.referralCode.trim()) {
+        checkReferralCode(signUpData.referralCode);
+      }
+    }, 500); // 500ms 후 검증
+
+    return () => clearTimeout(timer);
+  }, [signUpData.referralCode]);
 
   // 컴포넌트 마운트 시 저장된 이메일 불러오기
   useEffect(() => {
@@ -145,13 +160,18 @@ export function MobileLogin() {
         .from('users')
         .select('user_id, role, tenant_id, center_name, username, email')
         .eq('referral_code', code.toLowerCase())
-        .in('role', ['center', 'store'])
         .single();
+
+      // RLS 정책 에러 무시 (406 Not Acceptable)
+      if (error?.status === 406 || error?.code === 'PGRST116') {
+        setReferrerInfo(null);
+        return;
+      }
 
       if (error || !referrer) {
         setReferrerInfo(null);
         setSignUpErrors(prev => ({ ...prev, referralCode: '유효하지 않은 추천인 코드입니다' }));
-      } else {
+      } else if (referrer.role === 'center' || referrer.role === 'store') {
         const roleName = referrer.role === 'center' ? '센터' : '가맹점';
         setReferrerInfo({
           name: referrer.center_name || referrer.username,
@@ -159,9 +179,12 @@ export function MobileLogin() {
           email: referrer.email
         });
         setSignUpErrors(prev => ({ ...prev, referralCode: '' }));
+      } else {
+        setReferrerInfo(null);
+        setSignUpErrors(prev => ({ ...prev, referralCode: '유효하지 않은 추천인 코드입니다' }));
       }
     } catch (error) {
-      console.error('추천인 코드 확인 오류:', error);
+      // 에러 로그 무시 (RLS 정책으로 인한 406 에러는 정상)
       setReferrerInfo(null);
     } finally {
       setIsCheckingReferral(false);
@@ -296,7 +319,8 @@ export function MobileLogin() {
           data: {
             role: 'user',
             username: signUpData.username,
-          }
+          },
+          // shouldCreateSession: false는 지원되지 않으므로 회원가입 후 명시적으로 로그아웃
         }
       });
 
@@ -305,6 +329,11 @@ export function MobileLogin() {
       
       if (authError) {
         console.log('⚠️ Auth 생성 실패 - DB 전용 계정으로 생성:', authError.message);
+      }
+
+      // 회원가입 직후 자동 로그인을 방지하기 위해 즉시 로그아웃
+      if (authData?.user?.id) {
+        await supabase.auth.signOut();
       }
 
       // 2. password를 bcrypt hash로 변환 (DB 로그인용)
@@ -684,7 +713,6 @@ export function MobileLogin() {
                     value={signUpData.referralCode}
                     onChange={(e) => {
                       setSignUpData({ ...signUpData, referralCode: e.target.value });
-                      checkReferralCode(e.target.value);
                     }}
                     className={`w-full bg-slate-800/60 border rounded-xl pl-11 pr-4 py-3.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:bg-slate-800/80 transition-all ${
                       signUpErrors.referralCode 

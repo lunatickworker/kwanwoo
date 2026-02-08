@@ -29,6 +29,8 @@ export const SUPABASE_CONFIG = {
   serviceRoleKey: getEnv('VITE_SUPABASE_SERVICE_ROLE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MjkyMjI3NywiZXhwIjoyMDc4NDk4Mjc3fQ.iuQCG3bhprNIIcFi3e94EQATHvIzVw50Wmp_cFFhSsU'),
   // Backend API URL
   backendUrl: getEnv('VITE_BACKEND_URL', 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f'),
+  // Edge Function Base URL (트랜잭션 API)
+  FUNCTIONS_BASE_URL: getEnv('VITE_FUNCTIONS_BASE_URL', 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1'),
 };
 
 // ============================================================

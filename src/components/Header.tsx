@@ -1,6 +1,6 @@
 import { User, LogOut, UserPlus, FileCheck, ShoppingCart, MessageSquare, Wallet, ArrowLeftRight, ArrowDownCircle, Volume2, VolumeX } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "../utils/supabase/client";
 import { toast } from "sonner";
 import { getHierarchyUserIds } from "../utils/api/query-helpers";
@@ -56,57 +56,606 @@ export function Header({ onNavigate }: HeaderProps) {
   const [supportNotifications, setSupportNotifications] = useState<number>(0);
   const [depositNotifications, setDepositNotifications] = useState<number>(0); // 가맹점 입금 알림
   const [coinSaleNotifications, setCoinSaleNotifications] = useState<number>(0); // 가맹점 코인 판매 요청 알림
+  const [audioReady, setAudioReady] = useState(false); // 음성 재생 권한 플래그
+  const signupAudioRef = useRef<HTMLAudioElement | null>(null); // 신규 가입 알림음 관리
+  const supportAudioRef = useRef<HTMLAudioElement | null>(null); // 고객센터 알림음 관리
+  const accountAudioRef = useRef<HTMLAudioElement | null>(null); // 계좌인증 알림음 관리
+  const transferAudioRef = useRef<HTMLAudioElement | null>(null); // 구매요청 알림음 관리
+  const depositAudioRef = useRef<HTMLAudioElement | null>(null); // 입금 알림음 관리
+  const coinSaleAudioRef = useRef<HTMLAudioElement | null>(null); // 코인판매 알림음 관리
+  const abortControllerRef = useRef<AbortController>(new AbortController()); // 신규가입 abort 제어
+  const supportAbortControllerRef = useRef<AbortController>(new AbortController()); // 고객센터 abort 제어
+  const accountAbortControllerRef = useRef<AbortController>(new AbortController()); // 계좌인증 abort 제어
+  const transferAbortControllerRef = useRef<AbortController>(new AbortController()); // 구매요청 abort 제어
+  const depositAbortControllerRef = useRef<AbortController>(new AbortController()); // 입금 abort 제어
+  const coinSaleAbortControllerRef = useRef<AbortController>(new AbortController()); // 코인판매 abort 제어
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorNewSignups 타이머 제어
+  const supportTimeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorSupportMessages 타이머 제어
+  const accountTimeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorAccountVerifications 타이머 제어
+  const transferTimeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorTransferRequests 타이머 제어
+  const depositTimeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorDeposits 타이머 제어
+  const coinSaleTimeoutRef = useRef<NodeJS.Timeout | null>(null); // monitorCoinSales 타이머 제어
 
   const handleLogout = () => {
     logout();
     window.location.hash = '#admin/login';
   };
 
-  // 구매 요청 알림 소리 재생
-  const playPurchaseRequestSound = () => {
-    if (!soundEnabled) return;
-    
-    try {
-      const soundUrl = new URL('../assets/sounds/accountapproved.MP3', import.meta.url).href;
-      const audio = new Audio(soundUrl);
-      audio.volume = 0.7;
-      audio.play().catch(err => {
-        console.error('Failed to play sound:', err);
-      });
-    } catch (error) {
-      console.error('Error creating audio element:', error);
-    }
-  };
+  // 사용자 상호작용 감지 -> 음성 재생 권한 활성화
+  useEffect(() => {
+    // 권한 획득: 실제 오디오 파일로 시도
+    const enableAudioWithRealSound = () => {
+      try {
+        const soundUrl = new URL('../assets/sounds/newuserapproved.MP3', import.meta.url).href;
+        const audio = new Audio(soundUrl);
+        audio.volume = 0;
+        audio.muted = true;
+        audio.crossOrigin = 'anonymous';
+        
+        console.log('[권한요청] 실제 알림음 파일로 권한 획득 시도...');
+        const playPromise = audio.play();
+        
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log('✅✅ [권한획득] 성공 - 이제 음성 재생 가능');
+              setAudioReady(true);
+            })
+            .catch((err: any) => {
+              console.log('❌ [권한획득] 실패:', err?.name);
+            });
+        }
+      } catch (error) {
+        console.log('⚠️ [권한요청] 예외:', error);
+      }
+    };
 
-  // 가맹점 판매 요청 알림 소리 재생
-  const playCoinSaleSound = () => {
-    if (!soundEnabled) return;
-    
-    try {
-      const soundUrl = new URL('../assets/sounds/storeapply.MP3', import.meta.url).href;
-      const audio = new Audio(soundUrl);
-      audio.volume = 0.7;
-      audio.play().catch(err => {
-        console.error('Failed to play coin sale sound:', err);
-      });
-    } catch (error) {
-      console.error('Error creating audio element:', error);
+    // 1) 컴포넌트 마운트 직후 즉시 시도
+    console.log('🔧 [Header마운트] 권한 획득 시도 시작...');
+    enableAudioWithRealSound();
+
+    // 2) 사용자 상호작용 시에도 시도
+    let permissionGranted = false;
+    const handler = () => {
+      if (permissionGranted) return;
+      permissionGranted = true;
+      console.log('👆 [사용자상호작용] 감지됨 - 권한 재시도');
+      enableAudioWithRealSound();
+      
+      // 리스너 제거
+      document.removeEventListener('click', handler, false);
+      document.removeEventListener('keydown', handler, false);
+      document.removeEventListener('touchstart', handler, false);
+      document.removeEventListener('mousemove', handler, false);
+      window.removeEventListener('click', handler, false);
+      window.removeEventListener('keydown', handler, false);
+      window.removeEventListener('touchstart', handler, false);
+    };
+
+    // document와 window 모두에 리스너 추가 (더 확실하게)
+    const listenerId = setTimeout(() => {
+      document.addEventListener('click', handler, false);
+      document.addEventListener('keydown', handler, false);
+      document.addEventListener('touchstart', handler, false);
+      document.addEventListener('mousemove', handler, false);
+      
+      window.addEventListener('click', handler, false);
+      window.addEventListener('keydown', handler, false);
+      window.addEventListener('touchstart', handler, false);
+      
+      console.log('👂 [리스너] document/window에 등록됨');
+    }, 100);
+
+    return () => {
+      clearTimeout(listenerId);
+      document.removeEventListener('click', handler, false);
+      document.removeEventListener('keydown', handler, false);
+      document.removeEventListener('touchstart', handler, false);
+      document.removeEventListener('mousemove', handler, false);
+      
+      window.removeEventListener('click', handler, false);
+      window.removeEventListener('keydown', handler, false);
+      window.removeEventListener('touchstart', handler, false);
+    };
+  }, []);
+
+  // 소리 on/off 토글 변경 시 즉시 재생 중인 모든 알림음 멈추기
+  useEffect(() => {
+    if (!soundEnabled) {
+      console.log('🔇 [소리OFF] 즉시 모든 재생 중단 + 모니터링 중지');
+      
+      // 오디오 멈추기
+      if (signupAudioRef.current) {
+        signupAudioRef.current.pause();
+        signupAudioRef.current.currentTime = 0;
+      }
+      if (supportAudioRef.current) {
+        supportAudioRef.current.pause();
+        supportAudioRef.current.currentTime = 0;
+      }
+      if (accountAudioRef.current) {
+        accountAudioRef.current.pause();
+        accountAudioRef.current.currentTime = 0;
+      }
+      if (transferAudioRef.current) {
+        transferAudioRef.current.pause();
+        transferAudioRef.current.currentTime = 0;
+      }
+      if (depositAudioRef.current) {
+        depositAudioRef.current.pause();
+        depositAudioRef.current.currentTime = 0;
+      }
+      if (coinSaleAudioRef.current) {
+        coinSaleAudioRef.current.pause();
+        coinSaleAudioRef.current.currentTime = 0;
+      }
+      
+      // 타이머 취소
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      if (supportTimeoutRef.current) {
+        clearTimeout(supportTimeoutRef.current);
+        supportTimeoutRef.current = null;
+      }
+      if (accountTimeoutRef.current) {
+        clearTimeout(accountTimeoutRef.current);
+        accountTimeoutRef.current = null;
+      }
+      if (transferTimeoutRef.current) {
+        clearTimeout(transferTimeoutRef.current);
+        transferTimeoutRef.current = null;
+      }
+      if (depositTimeoutRef.current) {
+        clearTimeout(depositTimeoutRef.current);
+        depositTimeoutRef.current = null;
+      }
+      if (coinSaleTimeoutRef.current) {
+        clearTimeout(coinSaleTimeoutRef.current);
+        coinSaleTimeoutRef.current = null;
+      }
+      
+      // AbortController 모두 abort
+      abortControllerRef.current.abort();
+      supportAbortControllerRef.current.abort();
+      accountAbortControllerRef.current.abort();
+      transferAbortControllerRef.current.abort();
+      depositAbortControllerRef.current.abort();
+      coinSaleAbortControllerRef.current.abort();
+      console.log('🛑 [AbortController] 모두 abort() 호출');
+    } else {
+      // 소리 ON: 새로운 AbortController 생성
+      abortControllerRef.current = new AbortController();
+      supportAbortControllerRef.current = new AbortController();
+      accountAbortControllerRef.current = new AbortController();
+      transferAbortControllerRef.current = new AbortController();
+      depositAbortControllerRef.current = new AbortController();
+      coinSaleAbortControllerRef.current = new AbortController();
+      console.log('✅ [소리ON] 새로운 AbortController 생성');
     }
-  };
+  }, [soundEnabled]);
 
   // 신규 가입 알림 소리 재생
   const playSignupSound = () => {
-    if (!soundEnabled) return;
+    // 진입 시 abort 확인
+    if (abortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 음성 재생 스킵');
+      return;
+    }
     
     try {
+      // 기존 오디오가 재생 중이면 먼저 멈추기
+      if (signupAudioRef.current) {
+        signupAudioRef.current.pause();
+        signupAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 신규 가입 알림음 멈춤');
+      }
+      
       const soundUrl = new URL('../assets/sounds/newuserapproved.MP3', import.meta.url).href;
+      console.log('🎵 신규 가입 알림음 재생 시도:', { audioReady, soundEnabled, soundUrl });
+      
       const audio = new Audio(soundUrl);
       audio.volume = 0.7;
-      audio.play().catch(err => {
-        console.error('Failed to play sound:', err);
-      });
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      // ref에 저장 (나중에 토글로 멈출 수 있게)
+      signupAudioRef.current = audio;
+      
+      // play() 직전 다시 한 번 abort 확인
+      if (abortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      // play() 직전 soundEnabled 확인
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        // abort 리스너 추가
+        abortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            // play 후 다시 한 번 abort 확인
+            if (abortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 신규 가입 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 음성 재생 실패:', err?.name, err?.message);
+            // NotAllowedError: 사용자가 아직 상호작용하지 않은 경우
+            if (err?.name === 'NotAllowedError') {
+              console.log('💡 [팁] 브라우저 자동재생 정책이 활성화됨 - 페이지와 상호작용한 후 다시 시도');
+            }
+          });
+      }
     } catch (error) {
-      console.error('Error creating audio element:', error);
+      console.error('❌ 오디오 요소 생성 실패:', error);
+    }
+  };
+
+  // 고객센터 알림 소리 재생
+  const playSupportSound = () => {
+    // 진입 시 abort 확인
+    if (supportAbortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 고객센터 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 고객센터 음성 재생 스킵');
+      return;
+    }
+    
+    try {
+      // 기존 오디오가 재생 중이면 먼저 멈추기
+      if (supportAudioRef.current) {
+        supportAudioRef.current.pause();
+        supportAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 고객센터 알림음 멈춤');
+      }
+      
+      const soundUrl = new URL('../assets/sounds/inquery.MP3', import.meta.url).href;
+      console.log('🎵 고객센터 알림음 재생 시도:', { audioReady, soundEnabled, soundUrl });
+      
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      // ref에 저장
+      supportAudioRef.current = audio;
+      
+      // play() 직전 다시 한 번 abort 확인
+      if (supportAbortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 고객센터 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      // play() 직전 soundEnabled 확인
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 고객센터 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        // abort 리스너 추가
+        supportAbortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [고객센터 abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            // play 후 다시 한 번 abort 확인
+            if (supportAbortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [고객센터 play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 고객센터 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 고객센터 음성 재생 실패:', err?.name, err?.message);
+            if (err?.name === 'NotAllowedError') {
+              console.log('💡 [팁] 브라우저 자동재생 정책이 활성화됨 - 페이지와 상호작용한 후 다시 시도');
+            }
+          });
+      }
+    } catch (error) {
+      console.error('❌ 고객센터 오디오 요소 생성 실패:', error);
+    }
+  };
+
+  // 계좌인증 알림 소리 재생
+  const playAccountSound = () => {
+    if (accountAbortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 계좌인증 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 계좌인증 음성 재생 스킵');
+      return;
+    }
+    
+    try {
+      if (accountAudioRef.current) {
+        accountAudioRef.current.pause();
+        accountAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 계좌인증 알림음 멈춤');
+      }
+      
+      const soundUrl = new URL('../assets/sounds/accountapproved.MP3', import.meta.url).href;
+      console.log('🎵 계좌인증 알림음 재생 시도:', { soundUrl });
+      
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      accountAudioRef.current = audio;
+      
+      if (accountAbortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 계좌인증 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 계좌인증 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        accountAbortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [계좌인증 abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            if (accountAbortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [계좌인증 play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 계좌인증 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 계좌인증 음성 재생 실패:', err?.name, err?.message);
+          });
+      }
+    } catch (error) {
+      console.error('❌ 계좌인증 오디오 요소 생성 실패:', error);
+    }
+  };
+
+  // 구매요청 알림 소리 재생
+  const playTransferSound = () => {
+    if (transferAbortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 구매요청 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 구매요청 음성 재생 스킵');
+      return;
+    }
+    
+    try {
+      if (transferAudioRef.current) {
+        transferAudioRef.current.pause();
+        transferAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 구매요청 알림음 멈춤');
+      }
+      
+      const soundUrl = new URL('../assets/sounds/coinsell.MP3', import.meta.url).href;
+      console.log('🎵 구매요청 알림음 재생 시도:', { soundUrl });
+      
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      transferAudioRef.current = audio;
+      
+      if (transferAbortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 구매요청 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 구매요청 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        transferAbortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [구매요청 abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            if (transferAbortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [구매요청 play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 구매요청 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 구매요청 음성 재생 실패:', err?.name, err?.message);
+          });
+      }
+    } catch (error) {
+      console.error('❌ 구매요청 오디오 요소 생성 실패:', error);
+    }
+  };
+
+  // 입금 알림 소리 재생
+  const playDepositSound = () => {
+    if (depositAbortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 입금 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 입금 음성 재생 스킵');
+      return;
+    }
+    
+    try {
+      if (depositAudioRef.current) {
+        depositAudioRef.current.pause();
+        depositAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 입금 알림음 멈춤');
+      }
+      
+      const soundUrl = new URL('../assets/sounds/depositcompleted.MP3', import.meta.url).href;
+      console.log('🎵 입금 알림음 재생 시도:', { soundUrl });
+      
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      depositAudioRef.current = audio;
+      
+      if (depositAbortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 입금 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 입금 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        depositAbortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [입금 abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            if (depositAbortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [입금 play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 입금 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 입금 음성 재생 실패:', err?.name, err?.message);
+          });
+      }
+    } catch (error) {
+      console.error('❌ 입금 오디오 요소 생성 실패:', error);
+    }
+  };
+
+  // 코인판매 알림 소리 재생
+  const playCoinSaleSound = () => {
+    if (coinSaleAbortControllerRef.current?.signal.aborted) {
+      console.log('⚠️ [진입] 코인판매 재생 중단됨 - 함수 종료');
+      return;
+    }
+    
+    if (!soundEnabled) {
+      console.log('⚠️ 음소거 상태 - 코인판매 음성 재생 스킵');
+      return;
+    }
+    
+    try {
+      if (coinSaleAudioRef.current) {
+        coinSaleAudioRef.current.pause();
+        coinSaleAudioRef.current.currentTime = 0;
+        console.log('🛑 이전 코인판매 알림음 멈춤');
+      }
+      
+      const soundUrl = new URL('../assets/sounds/storeapply.MP3', import.meta.url).href;
+      console.log('🎵 코인판매 알림음 재생 시도:', { soundUrl });
+      
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      
+      coinSaleAudioRef.current = audio;
+      
+      if (coinSaleAbortControllerRef.current?.signal.aborted) {
+        console.log('⚠️ [play 직전] 코인판매 재생 중단됨 - 재생 취소');
+        return;
+      }
+      
+      if (!soundEnabled) {
+        console.log('⚠️ [play 직전] 음소거 감지 - 코인판매 재생 취소');
+        return;
+      }
+      
+      const playPromise = audio.play();
+      
+      if (playPromise !== undefined) {
+        coinSaleAbortControllerRef.current?.signal.addEventListener('abort', () => {
+          console.log('🛑 [코인판매 abort 신호] 재생 중단');
+          audio.pause();
+          audio.currentTime = 0;
+        });
+        
+        playPromise
+          .then(() => {
+            if (coinSaleAbortControllerRef.current?.signal.aborted) {
+              console.log('⚠️ [코인판매 play 성공 후] abort 신호 감지 - 재생 중단');
+              audio.pause();
+              audio.currentTime = 0;
+              return;
+            }
+            console.log('✅✅ 코인판매 알림음 재생 성공!!!');
+          })
+          .catch((err: any) => {
+            console.warn('❌ 코인판매 음성 재생 실패:', err?.name, err?.message);
+          });
+      }
+    } catch (error) {
+      console.error('❌ 코인판매 오디오 요소 생성 실패:', error);
     }
   };
 
@@ -327,16 +876,27 @@ export function Header({ onNavigate }: HeaderProps) {
           orderCount = result.count || 0;
         }
 
-        // 고객센터 알림 (센터/에이전시만)
+        // 고객센터 알림 (센터/에이전시만) - 조직 격리 적용
         let supportData = [];
         if (isCenter || isAgency) {
+          console.log('🔐 [Header] 고객센터 알림 - 조직 격리 적용:', {
+            hierarchyUserIds: hierarchyUserIds.length,
+            role: user.role
+          });
+          
           const supportResult = await supabase
             .from('support_messages')
             .select('*', { count: 'exact' })
+            .in('user_id', hierarchyUserIds)  // 조직 격리: 하위 사용자만
             .eq('sender_type', 'user')
             .eq('is_read', false);
           supportData = supportResult.data || [];
           supportCount = supportResult.count || 0;
+          
+          console.log('🔔 [Header] 고객센터 알림 조회:', {
+            메시지수: supportCount,
+            에러: supportResult.error?.message
+          });
         }
 
         // 입금 알림 - 가맹점만
@@ -384,30 +944,8 @@ export function Header({ onNavigate }: HeaderProps) {
                 .eq('type', 'account_verification')
                 .eq('is_read', false);
               
-              // 클라이언트에서 필터링 - 같은 verification_id 확인
-              const hasDuplicate = existingNotifications?.some(notif => {
-                const notifId = notif.data?.verification_id || notif.data?.id;
-                return notifId === verificationId;
-              });
-              
-              // 읽지 않은 알림이 없으면 새로 생성
-              if (!hasDuplicate) {
-                const { error: insertError } = await supabase.from('notifications').insert({
-                  user_id: user.id,
-                  type: 'account_verification',
-                  title: '계좌 인증 요청',
-                  message: `새로운 계좌 인증 요청이 있습니다.`,
-                  is_read: false,
-                  data: verification,
-                });
-                if (insertError) {
-                  console.error('Failed to insert verification notification:', insertError);
-                } else {
-                  // ✅ 알림 생성 성공 → 직접 소리 재생
-                  console.log('🎵 [Header] Playing account_verification sound');
-                  playPurchaseRequestSound();
-                }
-              }
+              // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+              console.log('🔔 [Header] Account verification detected, refreshing notifications');
             } catch (err) {
               console.error('Failed to create verification notification:', err);
             }
@@ -444,30 +982,8 @@ export function Header({ onNavigate }: HeaderProps) {
                 .eq('type', 'purchase_request')
                 .eq('is_read', false);
               
-              // 클라이언트에서 필터링 - data.id 또는 data.request_id 일치하는지 확인
-              const hasDuplicate = existingNotifications?.some(notif => {
-                const notifId = notif.data?.id || notif.data?.request_id;
-                return notifId === transferId;
-              });
-              
-              // 같은 건의 읽지 않은 알림이 없으면 새로 생성
-              if (!hasDuplicate) {
-                const { error: insertError } = await supabase.from('notifications').insert({
-                  user_id: user.id,
-                  type: 'purchase_request',
-                  title: '입출금 요청 발생',
-                  message: `새로운 입출금 요청이 있습니다.`,
-                  is_read: false,
-                  data: transfer,
-                });
-                if (insertError) {
-                  console.error('Failed to insert transfer notification:', insertError);
-                } else {
-                  // ✅ 알림 생성 성공 → 직접 소리 재생
-                  console.log('🎵 [Header] Playing purchase_request sound');
-                  playPurchaseRequestSound();
-                }
-              }
+              // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+              console.log('🔔 [Header] Transfer request detected, refreshing notifications');
             } catch (err) {
               console.error('Failed to create transfer notification:', err);
             }
@@ -488,30 +1004,8 @@ export function Header({ onNavigate }: HeaderProps) {
                 .eq('type', 'support_request')
                 .eq('is_read', false);
               
-              // 클라이언트에서 필터링 - 같은 support_message_id 확인
-              const hasDuplicate = existingNotifications?.some(notif => {
-                const notifId = notif.data?.support_message_id || notif.data?.id;
-                return notifId === supportId;
-              });
-              
-              // 같은 건의 읽지 않은 알림이 없으면 새로 생성
-              if (!hasDuplicate) {
-                const { error: insertError } = await supabase.from('notifications').insert({
-                  user_id: user.id,
-                  type: 'support_request',
-                  title: '고객 문의',
-                  message: `새로운 고객 문의가 있습니다.`,
-                  is_read: false,
-                  data: support,
-                });
-                if (insertError) {
-                  console.error('Failed to insert support notification:', insertError);
-                } else {
-                  // ✅ 알림 생성 성공 → 직접 소리 재생
-                  console.log('🎵 [Header] Playing support_request sound');
-                  playPurchaseRequestSound();
-                }
-              }
+              // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+              console.log('🔔 [Header] Support request detected, refreshing notifications');
             } catch (err) {
               console.error('Failed to create support notification:', err);
             }
@@ -532,26 +1026,8 @@ export function Header({ onNavigate }: HeaderProps) {
                 .eq('type', 'deposit')
                 .eq('is_read', false);
               
-              // 클라이언트에서 필터링 - 같은 deposit_id 확인
-              const hasDuplicate = existingNotifications?.some(notif => {
-                const notifId = notif.data?.deposit_id || notif.data?.id;
-                return notifId === depositId;
-              });
-              
-              // 읽지 않은 알림이 없으면 새로 생성
-              if (!hasDuplicate) {
-                const { error: insertError } = await supabase.from('notifications').insert({
-                  user_id: user.id,
-                  type: 'deposit',
-                  title: '입금 발생',
-                  message: `새로운 입금이 있습니다.`,
-                  is_read: false,
-                  data: deposit,
-                });
-                if (insertError) {
-                  console.error('Failed to create deposit notification:', insertError);
-                }
-              }
+              // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+              console.log('🔔 [Header] Deposit detected, refreshing notifications');
             } catch (err) {
               console.error('Failed to create deposit notification:', err);
             }
@@ -582,30 +1058,8 @@ export function Header({ onNavigate }: HeaderProps) {
                     .eq('type', 'signup')
                     .eq('is_read', false);
                   
-                  // 클라이언트에서 필터링 - 같은 new_user_id 확인
-                  const hasDuplicate = existingNotifications?.some(notif => {
-                    const notifId = notif.data?.user_id || notif.data?.id;
-                    return notifId === userId;
-                  });
-                  
-                  // 읽지 않은 알림이 없으면 새로 생성
-                  if (!hasDuplicate) {
-                    const { error: insertError } = await supabase.from('notifications').insert({
-                      user_id: user.id,
-                      type: 'signup',
-                      title: '신규 가입',
-                      message: `새로운 사용자가 가입했습니다.`,
-                      is_read: false,
-                      data: newUser,
-                    });
-                    if (insertError) {
-                      console.error('Failed to insert signup notification:', insertError);
-                    } else {
-                      // ✅ 알림 생성 성공 → 직접 소리 재생
-                      console.log('🎵 [Header] Playing signup sound');
-                      playSignupSound();
-                    }
-                  }
+                  // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+                  console.log('🔔 [Header] Signup detected, refreshing notifications');
                 } catch (err) {
                   console.error('Failed to process signup notification:', err);
                 }
@@ -630,30 +1084,8 @@ export function Header({ onNavigate }: HeaderProps) {
                 .eq('type', 'store_coin_sale_request')
                 .eq('is_read', false);
               
-              // 클라이언트에서 필터링 - 같은 coin_sale_id 확인
-              const hasDuplicate = existingNotifications?.some(notif => {
-                const notifId = notif.data?.id;
-                return notifId === coinSaleId;
-              });
-              
-              // 읽지 않은 알림이 없으면 새로 생성
-              if (!hasDuplicate) {
-                const { error: insertError } = await supabase.from('notifications').insert({
-                  user_id: user.id,
-                  type: 'store_coin_sale_request',
-                  title: '가맹점 판매 요청',
-                  message: `새로운 가맹점 판매 요청이 있습니다.`,
-                  is_read: false,
-                  data: coinSale,
-                });
-                if (insertError) {
-                  console.error('Failed to insert coin sale notification:', insertError);
-                } else {
-                  // ✅ 알림 생성 성공 → 직접 소리 재생
-                  console.log('🎵 [Header] Playing coin sale sound');
-                  playCoinSaleSound();
-                }
-              }
+              // Edge Function에서만 알림 생성 - 여기서는 UI만 갱신
+              console.log('🔔 [Header] Coin sale request detected, refreshing notifications');
             } catch (err) {
               console.error('Failed to process coin sale notification:', err);
             }
@@ -770,35 +1202,6 @@ export function Header({ onNavigate }: HeaderProps) {
 
     fetchNotifications();
 
-    // 실시간 구독: 계좌 인증 요청 (센터/에이전시만)
-    const accountVerificationSub = (isCenter || isAgency) ? supabase
-      .channel('account_verification_notifications')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'account_verifications'
-        },
-        async (payload: any) => {
-          console.log('🔔 [Header] account_verification changed:', payload);
-          if (payload.eventType === 'INSERT') {
-            // 새로운 계좌 인증 요청이 생성됨 - 알림 생성
-            const { error: notificationError } = await supabase.from('notifications').insert({
-              user_id: user?.id,
-              type: 'account_verification',
-              title: '계좌 인증 요청',
-              message: `새로운 계좌 인증 요청이 있습니다.`,
-              is_read: false,
-              data: payload.new,
-            });
-            if (notificationError) console.error('Failed to create notification:', notificationError);
-          }
-          fetchNotifications();
-        }
-      )
-      .subscribe() : null;
-
     // 실시간 구독: 신규 회원가입 및 상태 변경 (센터/에이전시만)
     const usersSub = (isCenter || isAgency) ? supabase
       .channel('users_notifications')
@@ -827,18 +1230,7 @@ export function Header({ onNavigate }: HeaderProps) {
         },
         async (payload: any) => {
           console.log('🔔 [Header] transfer_request changed:', payload);
-          if (payload.eventType === 'INSERT') {
-            // 새로운 입출금 요청이 생성됨 - 알림 생성
-            const { error: notificationError } = await supabase.from('notifications').insert({
-              user_id: user?.id,
-              type: 'purchase_request',
-              title: '입출금 요청 발생',
-              message: `새로운 입출금 요청이 있습니다.`,
-              is_read: false,
-              data: payload.new,
-            });
-            if (notificationError) console.error('Failed to create notification:', notificationError);
-          }
+          // 알림은 백엔드 API에서 생성 (경로 3)
           fetchNotifications();
         }
       )
@@ -856,18 +1248,7 @@ export function Header({ onNavigate }: HeaderProps) {
         },
         async (payload: any) => {
           console.log('🔔 [Header] deposit changed:', payload);
-          if (payload.eventType === 'INSERT') {
-            // 새로운 입금이 생성됨 - 알림 생성
-            const { error: notificationError } = await supabase.from('notifications').insert({
-              user_id: user?.id,
-              type: 'deposit',
-              title: '입금 발생',
-              message: `새로운 입금이 있습니다.`,
-              is_read: false,
-              data: payload.new,
-            });
-            if (notificationError) console.error('Failed to create notification:', notificationError);
-          }
+          // 알림은 백엔드 API에서 생성 (경로 3)
           fetchNotifications();
         }
       )
@@ -885,33 +1266,14 @@ export function Header({ onNavigate }: HeaderProps) {
         },
         async (payload: any) => {
           console.log('🔔 [Header] store_coin_sales changed:', payload);
-          if (payload.eventType === 'INSERT') {
-            // 새로운 가맹점 판매 요청이 생성됨 - 알림 생성
-            const { error: notificationError } = await supabase.from('notifications').insert({
-              user_id: user?.id,
-              type: 'store_coin_sale_request',
-              title: '가맹점 판매 요청',
-              message: `새로운 가맹점 판매 요청이 있습니다.`,
-              is_read: false,
-              data: payload.new,
-            });
-            if (notificationError) {
-              console.error('Failed to create notification:', notificationError);
-            } else {
-              // soundEnabled 체크 후 소리 재생
-              if (soundEnabled) {
-                console.log('🎵 [Header] Playing coin sale sound (realtime)');
-                playCoinSaleSound();
-              }
-            }
-          }
+          // 알림은 백엔드 API에서 생성 (경로 3)
           fetchNotifications();
         }
       )
       .subscribe() : null;
 
-    // 실시간 구독: 고객센터 메시지
-    const supportSub = supabase
+    // 실시간 구독: 고객센터 메시지 (조직 격리)
+    const supportSub = (isCenter || isAgency) ? supabase
       .channel('support_messages_notifications')
       .on(
         'postgres_changes',
@@ -921,21 +1283,21 @@ export function Header({ onNavigate }: HeaderProps) {
           table: 'support_messages'
         },
         () => {
+          console.log('🔔 [Header] support_messages 변경 감지 - 알림 새로고침');
           fetchNotifications();
         }
       )
-      .subscribe();
+      .subscribe() : null;
 
     // 10초마다 갱신 (fallback)
     const interval = setInterval(fetchNotifications, 10000);
     
     return () => {
-      if (accountVerificationSub) accountVerificationSub.unsubscribe(); // ✅ null 체크
       if (usersSub) usersSub.unsubscribe(); // ✅ null 체크
       if (depositWithdrawalSub) depositWithdrawalSub.unsubscribe(); // ✅ null 체크
       if (coinSaleSub) coinSaleSub.unsubscribe(); // ✅ null 체크
       depositSub.unsubscribe();
-      supportSub.unsubscribe();
+      if (supportSub) supportSub.unsubscribe(); // ✅ null 체크
       clearInterval(interval);
     };
   }, [showNotifications, user?.id, user?.role, soundEnabled]);
@@ -1001,6 +1363,317 @@ export function Header({ onNavigate }: HeaderProps) {
       window.removeEventListener('deposits-viewed', handleDepositsViewed);
     };
   }, [isStore, user?.id, user?.role]);
+
+  // 신규 가입자(is_active=false) 모니터링 - 계속 알림음 재생
+  useEffect(() => {
+    if (!soundEnabled || !showNotifications) return; // center, agency만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorNewSignups = async () => {
+      try {
+        const hierarchyUserIds = await getHierarchyUserIds(user!.id, user!.role);
+        
+        // is_active = false인 신규 사용자 조회
+        const { data: inactiveUsers } = await supabase
+          .from('users')
+          .select('user_id, username')
+          .in('user_id', hierarchyUserIds)
+          .eq('is_active', false)
+          .eq('role', 'user');
+
+        if (inactiveUsers && inactiveUsers.length > 0) {
+          const now = Date.now();
+          // 7초마다만 알림음 재생 (너무 자주 울리지 않게)
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 신규 가입자 감지: ${inactiveUsers.length}명 - 알림음 재생`);
+            playSignupSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 신규 가입자 모니터링 오류:', error);
+      }
+
+      // 계속 모니터링
+      if (isMonitoring && !abortControllerRef.current?.signal.aborted) {
+        timeoutRef.current = setTimeout(monitorNewSignups, SOUND_INTERVAL);
+      }
+    };
+
+    monitorNewSignups();
+
+    return () => {
+      isMonitoring = false;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, showNotifications, user?.id, user?.role]);
+
+  // 고객센터 메시지(is_read=false) 모니터링 - 계속 알림음 재생
+  useEffect(() => {
+    if (!soundEnabled || !showNotifications) return; // center, agency만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorSupportMessages = async () => {
+      try {
+        const hierarchyUserIds = await getHierarchyUserIds(user!.id, user!.role);
+        
+        // is_read = false인 미읽은 고객센터 메시지 조회
+        const { data: unreadMessages, error: supportError } = await supabase
+          .from('support_messages')
+          .select('*')
+          .in('user_id', hierarchyUserIds)
+          .eq('sender_type', 'user')
+          .eq('is_read', false);
+
+        if (supportError) {
+          console.error('❌ 고객센터 메시지 조회 에러:', supportError);
+          return;
+        }
+
+        if (unreadMessages && unreadMessages.length > 0) {
+          const now = Date.now();
+          // 7초마다만 알림음 재생 (너무 자주 울리지 않게)
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 고객센터 미읽은 메시지 감지: ${unreadMessages.length}개 - 알림음 재생`);
+            playSupportSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 고객센터 메시지 모니터링 오류:', error);
+      }
+
+      // 계속 모니터링
+      if (isMonitoring && !supportAbortControllerRef.current?.signal.aborted) {
+        supportTimeoutRef.current = setTimeout(monitorSupportMessages, SOUND_INTERVAL);
+      }
+    };
+
+    monitorSupportMessages();
+
+    return () => {
+      isMonitoring = false;
+      if (supportTimeoutRef.current) {
+        clearTimeout(supportTimeoutRef.current);
+        supportTimeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, showNotifications, user?.id, user?.role]);
+
+  // 계좌인증 (status=pending) 모니터링 - 계속 알림음 재생
+  useEffect(() => {
+    if (!soundEnabled || !showNotifications) return; // center, agency만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorAccountVerifications = async () => {
+      try {
+        const hierarchyUserIds = await getHierarchyUserIds(user!.id, user!.role);
+        
+        // status = pending인 계좌인증 조회
+        const { data: pendingAccounts, error: accountError } = await supabase
+          .from('account_verifications')
+          .select('*')
+          .in('user_id', hierarchyUserIds)
+          .eq('status', 'pending');
+
+        if (accountError) {
+          console.error('❌ 계좌인증 조회 에러:', accountError);
+          return;
+        }
+
+        if (pendingAccounts && pendingAccounts.length > 0) {
+          const now = Date.now();
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 계좌인증 대기: ${pendingAccounts.length}개 - 알림음 재생`);
+            playAccountSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 계좌인증 모니터링 오류:', error);
+      }
+
+      if (isMonitoring && !accountAbortControllerRef.current?.signal.aborted) {
+        accountTimeoutRef.current = setTimeout(monitorAccountVerifications, SOUND_INTERVAL);
+      }
+    };
+
+    monitorAccountVerifications();
+
+    return () => {
+      isMonitoring = false;
+      if (accountTimeoutRef.current) {
+        clearTimeout(accountTimeoutRef.current);
+        accountTimeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, showNotifications, user?.id, user?.role]);
+
+  // 구매요청 (status=pending) 모니터링 - 계속 알림음 재생
+  useEffect(() => {
+    if (!soundEnabled || !showNotifications) return; // center, agency만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorTransferRequests = async () => {
+      try {
+        const hierarchyUserIds = await getHierarchyUserIds(user!.id, user!.role);
+        
+        // status = pending인 구매요청 조회
+        const { data: pendingTransfers, error: transferError } = await supabase
+          .from('transfer_requests')
+          .select('*')
+          .in('user_id', hierarchyUserIds)
+          .eq('status', 'pending');
+
+        if (transferError) {
+          console.error('❌ 구매요청 조회 에러:', transferError);
+          return;
+        }
+
+        if (pendingTransfers && pendingTransfers.length > 0) {
+          const now = Date.now();
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 구매요청 대기: ${pendingTransfers.length}개 - 알림음 재생`);
+            playTransferSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 구매요청 모니터링 오류:', error);
+      }
+
+      if (isMonitoring && !transferAbortControllerRef.current?.signal.aborted) {
+        transferTimeoutRef.current = setTimeout(monitorTransferRequests, SOUND_INTERVAL);
+      }
+    };
+
+    monitorTransferRequests();
+
+    return () => {
+      isMonitoring = false;
+      if (transferTimeoutRef.current) {
+        clearTimeout(transferTimeoutRef.current);
+        transferTimeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, showNotifications, user?.id, user?.role]);
+
+  // 입금 (status=pending) 모니터링 - 계속 알림음 재생 (가맹점관리자만)
+  useEffect(() => {
+    if (!soundEnabled || !isStore) return; // store만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorDeposits = async () => {
+      try {
+        const hierarchyUserIds = await getHierarchyUserIds(user!.id, user!.role);
+        
+        // status = pending인 입금 조회
+        const { data: pendingDeposits, error: depositError } = await supabase
+          .from('deposits')
+          .select('*')
+          .in('user_id', hierarchyUserIds)
+          .eq('status', 'pending');
+
+        if (depositError) {
+          console.error('❌ 입금 조회 에러:', depositError);
+          return;
+        }
+
+        if (pendingDeposits && pendingDeposits.length > 0) {
+          const now = Date.now();
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 입금 대기: ${pendingDeposits.length}개 - 알림음 재생`);
+            playDepositSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 입금 모니터링 오류:', error);
+      }
+
+      if (isMonitoring && !depositAbortControllerRef.current?.signal.aborted) {
+        depositTimeoutRef.current = setTimeout(monitorDeposits, SOUND_INTERVAL);
+      }
+    };
+
+    monitorDeposits();
+
+    return () => {
+      isMonitoring = false;
+      if (depositTimeoutRef.current) {
+        clearTimeout(depositTimeoutRef.current);
+        depositTimeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, isStore, user?.id, user?.role]);
+
+  // 코인판매 (status=pending) 모니터링 - 계속 알림음 재생
+  useEffect(() => {
+    if (!soundEnabled || !showNotifications) return; // center, agency만
+
+    let isMonitoring = true;
+    let lastPlayedTime = 0;
+    const SOUND_INTERVAL = 7000; // 7초마다 체크
+
+    const monitorCoinSales = async () => {
+      try {
+        // status = pending인 코인 판매 요청 조회
+        const { data: pendingCoinSales, error: coinSaleError } = await supabase
+          .from('store_coin_sales')
+          .select('*')
+          .eq('center_id', user!.id)
+          .eq('status', 'pending');
+
+        if (coinSaleError) {
+          console.error('❌ 코인판매 조회 에러:', coinSaleError);
+          return;
+        }
+
+        if (pendingCoinSales && pendingCoinSales.length > 0) {
+          const now = Date.now();
+          if (now - lastPlayedTime > SOUND_INTERVAL && soundEnabled) {
+            console.log(`🔔 [Header] 코인판매 대기: ${pendingCoinSales.length}개 - 알림음 재생`);
+            playCoinSaleSound();
+            lastPlayedTime = now;
+          }
+        }
+      } catch (error) {
+        console.error('❌ 코인판매 모니터링 오류:', error);
+      }
+
+      if (isMonitoring && !coinSaleAbortControllerRef.current?.signal.aborted) {
+        coinSaleTimeoutRef.current = setTimeout(monitorCoinSales, SOUND_INTERVAL);
+      }
+    };
+
+    monitorCoinSales();
+
+    return () => {
+      isMonitoring = false;
+      if (coinSaleTimeoutRef.current) {
+        clearTimeout(coinSaleTimeoutRef.current);
+        coinSaleTimeoutRef.current = null;
+      }
+    };
+  }, [soundEnabled, showNotifications, user?.id]);
 
   return (
     <>

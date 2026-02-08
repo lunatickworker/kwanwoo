@@ -835,10 +835,10 @@ app.post("/make-server-b6d5667f/api/auth/login", async (c) => {
       return c.json({ error: 'email and password are required' }, 400);
     }
 
-    // 사용자 조회 (password_hash 컬럼만 조회)
+    // 사용자 조회 (is_active 포함)
     const { data: userData, error } = await supabase
       .from('users')
-      .select('user_id, email, username, password_hash, role, status, level, template_id, center_name, logo_url')
+      .select('user_id, email, username, password_hash, role, status, level, template_id, center_name, logo_url, is_active')
       .eq('email', email)
       .maybeSingle();
 

@@ -20,6 +20,7 @@ interface TransferRequestRecord {
   created_at: string;
   admin_note?: string;
   approved_at?: string;
+  tx_hash?: string; // 트랜잭션 TXID
 }
 
 export function TransferRequest({ wallets, selectedCoin, onNavigate, onSelectCoin }: TransferRequestProps) {
@@ -337,6 +338,13 @@ export function TransferRequest({ wallets, selectedCoin, onNavigate, onSelectCoi
                   <div>요청일: {new Date(request.created_at).toLocaleString('ko-KR')}</div>
                   {request.approved_at && (
                     <div>처리일: {new Date(request.approved_at).toLocaleString('ko-KR')}</div>
+                  )}
+                  {request.tx_hash && (
+                    <div className="mt-2 p-2 bg-cyan-500/10 border border-cyan-500/20 rounded">
+                      <div className="text-cyan-300 text-xs font-mono break-all">
+                        🔗 TXID: {request.tx_hash}
+                      </div>
+                    </div>
                   )}
                   {request.admin_note && (
                     <div className="mt-2 p-2 bg-slate-900/50 rounded text-slate-300">

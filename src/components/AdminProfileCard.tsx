@@ -110,7 +110,7 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
       .subscribe();
     
     return () => {
-      walletSubscription.unsubscribe();
+      supabase.removeChannel(walletSubscription);
     };
   }, [user?.id, user?.role]);
 
@@ -402,10 +402,11 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
       onClick={onClose}
     >
       {/* 프로필 카드 */}
-      <div 
-        className="mt-16 mr-4 w-[480px] bg-slate-900/95 backdrop-blur-xl border border-cyan-500/30 rounded-lg shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      {!showWithdrawForm && (
+        <div 
+          className="mt-16 mr-4 w-[480px] bg-slate-900/95 backdrop-blur-xl border border-cyan-500/30 rounded-lg shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
         {/* 헤더 */}
         <div className="flex items-center justify-between p-6 border-b border-cyan-500/20">
           <div>
@@ -642,7 +643,8 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
             </div>
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* 코인 판매 요청 모달 */}
       {showCoinSaleRequest && (
@@ -656,54 +658,100 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
 
       {/* 출금 폼 모달 */}
       {showWithdrawForm && withdrawingWallet && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 w-full max-w-md">
+        <div 
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2"
+          onClick={() => {
+            setShowWithdrawForm(false);
+            setWithdrawToAddress('');
+            setWithdrawAmount('');
+            setWithdrawingWallet(null);
+          }}
+        >
+          <div 
+            className="bg-slate-800 rounded-lg border border-slate-700 p-6 w-full max-w-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-lg font-semibold text-slate-200 mb-4">
               {withdrawingWallet.coin_type} 출금
             </h3>
 
             <div className="space-y-4">
-              {/* 보유량 표시 */}
-              <div className="bg-slate-700/30 border border-slate-600 rounded p-3">
-                <p className="text-xs text-slate-400 mb-1">보유량</p>
-                <div className="flex items-center justify-between">
-                  <p className="text-slate-200 font-semibold">
-                    {withdrawingWallet.balance.toLocaleString(undefined, { maximumFractionDigits: 8 })} {withdrawingWallet.coin_type}
+              {/* 보유량 */}
+              <div onClick={(e) => e.stopPropagation()}>
+                <label className="block text-sm font-medium text-slate-300 mb-2">보유량</label>
+                <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                  <p className="text-lg font-semibold text-cyan-400">
+                    {withdrawingWallet.balance.toFixed(8)} {withdrawingWallet.coin_type}
                   </p>
-                  <button
-                    onClick={() => setWithdrawAmount(withdrawingWallet.balance.toString())}
-                    className="text-xs px-2 py-1 bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 rounded transition-colors"
-                  >
-                    전액
-                  </button>
+                  {withdrawingWallet.price_krw && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      ≈ ₩ {(withdrawingWallet.balance * withdrawingWallet.price_krw).toLocaleString()}
+                    </p>
+                  )}
                 </div>
               </div>
 
-              {/* 받을 주소 입력 */}
-              <div>
-                <label className="block text-sm text-slate-300 mb-2">받을 지갑 주소</label>
+              {/* 받을 지갑 주소 */}
+              <div onClick={(e) => e.stopPropagation()}>
+                <label className="block text-sm font-medium text-slate-300 mb-2">받을 지갑 주소</label>
                 <input
                   type="text"
                   placeholder="지갑 주소 입력"
                   value={withdrawToAddress}
                   onChange={(e) => setWithdrawToAddress(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:border-cyan-500 focus:outline-none"
                 />
               </div>
 
               {/* 출금액 입력 */}
-              <div>
-                <label className="block text-sm text-slate-300 mb-2">출금액</label>
+              <div onClick={(e) => e.stopPropagation()}>
+                <label className="block text-sm font-medium text-slate-300 mb-2">출금액</label>
                 <input
                   type="number"
-                  placeholder="출금할 수량"
+                  placeholder="출금액 입력"
                   value={withdrawAmount}
                   onChange={(e) => setWithdrawAmount(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
                   step="any"
                   min="0"
                   max={withdrawingWallet.balance}
-                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                  className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
                 />
+              </div>
+
+              {/* 출금액 단축버튼 */}
+              <div>
+                <div className="grid grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setWithdrawAmount((withdrawingWallet.balance * 0.25).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    25%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWithdrawAmount((withdrawingWallet.balance * 0.5).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    50%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWithdrawAmount((withdrawingWallet.balance * 0.75).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    75%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWithdrawAmount(withdrawingWallet.balance.toString())}
+                    className="px-3 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/30 text-white rounded-lg text-sm font-semibold transition-all"
+                  >
+                    전액
+                  </button>
+                </div>
               </div>
 
               {/* 경고 알림 */}
@@ -754,4 +802,4 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
       )}
     </div>
   );
-} 
+}

@@ -112,10 +112,10 @@ export interface Notification {
   user_id: string;
   type: 'signup' | 'account_verification' | 'verification_request' | 'verification_approved' | 'verification_rejected' | 
         'purchase_request' | 'purchase_approved' | 'purchase_rejected' | 'purchase_completed' |
-        'deposit' | 'withdrawal';
+        'deposit' | 'withdrawal' | 'support_request' | 'store_coin_sale_request' | 'store_deposit';
   title: string;
   message: string;
-  read: boolean;
+  is_read: boolean;
   data?: any;
   created_at: string;
 }

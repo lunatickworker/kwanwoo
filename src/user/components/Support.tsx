@@ -28,25 +28,59 @@ export function Support({ onNavigate }: SupportProps) {
 
   // 메시지 로드 및 실시간 업데이트
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      console.log('⚠️ user 객체 없음');
+      return;
+    }
 
     const loadMessages = async () => {
-      const { data } = await supabase
-        .from('support_messages')
-        .select('*')
-        .eq('user_id', user.id) // Custom users 테이블의 user_id 사용
-        .order('created_at', { ascending: true });
+      console.log('📨 메시지 로드 시작:', {
+        user_id: user.id,
+        user_id_substring: user.id?.substring(0, 8) + '...',
+        user_email: user.email,
+        user_role: user.role
+      });
+      
+      try {
+        const { data, error } = await supabase
+          .from('support_messages')
+          .select('*')
+          .eq('user_id', user.id) // Custom users 테이블의 user_id 사용
+          .order('created_at', { ascending: true });
 
-      if (data) {
-        setMessages(data);
-        // 읽지 않은 관리자 메시지 읽음 처리
-        const unreadAdminMessages = data.filter(m => m.sender_type === 'admin' && !m.is_read);
-        if (unreadAdminMessages.length > 0) {
-          await supabase
-            .from('support_messages')
-            .update({ is_read: true })
-            .in('message_id', unreadAdminMessages.map(m => m.message_id));
+        if (error) {
+          console.error('❌ 메시지 조회 에러:', error);
+          return;
         }
+
+        if (data) {
+          console.log('✅ 메시지 조회 완료:', {
+            메시지수: data.length,
+            조회user_id: user.id.substring(0, 8) + '...',
+            메시지들: data.map(m => ({
+              message_id: m.message_id.substring(0, 8) + '...',
+              user_id: m.user_id.substring(0, 8) + '...',
+              sender_type: m.sender_type,
+              message: m.message.substring(0, 20) + '...'
+            }))
+          });
+          setMessages(data);
+          
+          // 읽지 않은 관리자 메시지 읽음 처리
+          const unreadAdminMessages = data.filter(m => m.sender_type === 'admin' && !m.is_read);
+          if (unreadAdminMessages.length > 0) {
+            console.log('📖 읽지 않은 메시지 처리:', unreadAdminMessages.length, '개');
+            await supabase
+              .from('support_messages')
+              .update({ is_read: true })
+              .in('message_id', unreadAdminMessages.map(m => m.message_id));
+          }
+        } else {
+          console.log('⚠️ 메시지 데이터 없음');
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('❌ loadMessages 예외:', err);
       }
     };
 
@@ -93,19 +127,27 @@ export function Support({ onNavigate }: SupportProps) {
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !user) return;
 
+    console.log('📤 메시지 전송 시작:', {
+      user_id: user.id?.substring(0, 8) + '...',
+      message: newMessage.trim().substring(0, 30) + '...',
+      sender_type: 'user'
+    });
+
     setIsSending(true);
     try {
-      const { error } = await supabase
+      const { error, data } = await supabase
         .from('support_messages')
         .insert({
           user_id: user.id, // Custom users 테이블의 user_id 사용
           message: newMessage.trim(),
           sender_type: 'user',
           is_read: false
-        });
+        })
+        .select();
 
       if (error) throw error;
 
+      console.log('✅ 메시지 저장 완료:', data);
       setNewMessage('');
       toast.success('메시지가 전송되었습니다');
     } catch (error) {

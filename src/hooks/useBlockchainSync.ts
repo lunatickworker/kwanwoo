@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { supabase } from '../utils/supabase/client';
+import { SUPABASE_CONFIG } from '../utils/config';
 
 interface BlockchainSyncOptions {
   maxAttempts?: number;
@@ -6,6 +8,7 @@ interface BlockchainSyncOptions {
   onSuccess?: () => void;
   onTimeout?: () => void;
   onError?: (error: Error) => void;
+  enabled?: boolean; // 모니터링 활성화 여부
 }
 
 export function useBlockchainSync(options: BlockchainSyncOptions = {}) {
@@ -14,7 +17,8 @@ export function useBlockchainSync(options: BlockchainSyncOptions = {}) {
     interval = 4000, // 4초
     onSuccess,
     onTimeout,
-    onError
+    onError,
+    enabled = false // 기본값: 비활성화 (Edge Function이 없는 경우 대비)
   } = options;
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -28,6 +32,12 @@ export function useBlockchainSync(options: BlockchainSyncOptions = {}) {
    * - 최대 120초 후 타임아웃
    */
   const startMonitoring = () => {
+    // 모니터링이 비활성화되어 있으면 실행하지 않음
+    if (!enabled) {
+      console.log('⚠️ 블록체인 모니터링이 비활성화되어 있습니다.');
+      return;
+    }
+
     if (isMonitoring) {
       console.log('⚠️ 모니터링이 이미 실행 중입니다');
       return;
@@ -45,44 +55,54 @@ export function useBlockchainSync(options: BlockchainSyncOptions = {}) {
         const progressPercent = (attempts / maxAttempts) * 100;
         setProgress(Math.min(progressPercent, 95)); // 95%까지만
 
-        console.log(`🔍 모니터링 시도 ${attempts}/${maxAttempts}`);
+        // Supabase 세션 가져오기
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        const headers: Record<string, string> = { 
+          'Content-Type': 'application/json'
+        };
+        
+        // 세션이 있으면 Authorization 헤더만 추가 (apikey 제거)
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`;
+        }
 
         const response = await fetch(
           'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f/scan-blockchain',
           {
             method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
+            headers,
+            // 타임아웃 설정 (10초)
+            signal: AbortSignal.timeout(10000)
           }
         );
 
         if (!response.ok) {
-          throw new Error(`API 오류: ${response.status}`);
+          // 조용히 건너뜀
+          return;
         }
 
         const data = await response.json();
 
-        console.log('📊 스캔 결과:', {
-          scanned: data.scanned,
-          created: data.created,
-          timestamp: data.timestamp
-        });
-
-        // created > 0이면 wallets이 업데이트됨
+        // ✅ 성공 시에만 로그 출력
         if (data.created > 0) {
-          console.log('✅ 블록체인 동기화 완료!');
+          console.log('✅ 블록체인 동기화 완료!', {
+            scanned: data.scanned,
+            created: data.created
+          });
           stopMonitoring();
           setProgress(100);
           onSuccess?.();
           return;
         }
       } catch (error) {
-        console.error('❌ 모니터링 오류:', error);
-        onError?.(error as Error);
+        // ✅ 모든 에러를 조용히 처리 (로그 노이즈 방지)
+        // 아무 것도 하지 않음
       }
 
       // 최대 시도 횟수 도달
       if (attempts >= maxAttempts) {
-        console.log('⏱️ 모니터링 타임아웃 (120초)');
+        console.log('⏱️ 블록체인 모니터링 타임아웃 (120초)');
         stopMonitoring();
         setProgress(100);
         onTimeout?.();

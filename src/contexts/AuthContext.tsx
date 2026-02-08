@@ -45,14 +45,99 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // 로그인 후 백그라운드 동기화 (60초마다, 실패 시 지수 백오프)
+  useEffect(() => {
+    if (!user) return;
+
+    let syncInterval: NodeJS.Timeout | null = null;
+    let retryCount = 0;
+    const maxRetry = 3;
+
+    const startSync = (delayMs: number = 60000) => {
+      syncInterval = setInterval(async () => {
+        try {
+          await refreshUser();
+          retryCount = 0; // 성공 시 재시도 카운트 리셋
+        } catch (err) {
+          retryCount++;
+          console.warn(`⚠️ Background sync failed (${retryCount}/${maxRetry}):`, err);
+          
+          // 3회 실패하면 동기화 중단 (캐시 사용)
+          if (retryCount >= maxRetry && syncInterval) {
+            clearInterval(syncInterval);
+            console.log('🛑 Background sync stopped after 3 failures');
+          }
+        }
+      }, delayMs);
+    };
+
+    startSync(60000); // 초기: 60초마다 동기화
+
+    return () => {
+      if (syncInterval) clearInterval(syncInterval);
+    };
+  }, [user]);
+
+  // 로그인 후 is_active 상태 실시간 모니터링 - 상태 변경 시 즉시 로그아웃
+  useEffect(() => {
+    if (!user) return;
+
+    // 관리자만 모니터링 (center, agency, store)
+    if (!['center', 'agency', 'store'].includes(user.role)) {
+      return;
+    }
+
+    console.log(`🔐 [AuthContext] 관리자 상태 모니터링 시작 - User: ${user.id}`);
+
+    // 실시간 구독: 사용자 상태 변경 감지
+    const statusSub = supabase
+      .channel(`user_status_${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'users',
+          filter: `user_id=eq.${user.id}`
+        },
+        (payload: any) => {
+          const updatedData = payload.new;
+          console.log('🔐 [AuthContext] 사용자 상태 변경 감지:', updatedData);
+
+          // is_active가 false로 변경된 경우
+          if (updatedData.is_active === false) {
+            console.log('🔐 [AuthContext] 계정이 비활성화됨 - 즉시 로그아웃', updatedData.user_id);
+            logout();
+            // 선택적: 로그인 페이지로 리다이렉트
+            window.location.hash = '#admin/login';
+          }
+
+          // status가 'inactive'로 변경된 경우
+          if (updatedData.status === 'inactive' || updatedData.status === 'disabled') {
+            console.log('🔐 [AuthContext] 계정 상태가 변경됨 - 즉시 로그아웃', updatedData);
+            logout();
+            window.location.hash = '#admin/login';
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      statusSub.unsubscribe();
+    };
+  }, [user]);
+
   const checkAuthSession = async () => {
     try {
       const sessionPromise = supabase.auth.getSession();
       
       const savedUser = localStorage.getItem('user');
+      const savedUserTimestamp = localStorage.getItem('userTimestamp');
       
-      // ✅ localStorage 데이터 검증
+      // ✅ localStorage 데이터 검증 + 유효성 체크 (5분)
       let validatedUser = null;
+      const CACHE_VALIDITY_MS = 5 * 60 * 1000; // 5분
+      
       if (savedUser) {
         try {
           validatedUser = JSON.parse(savedUser);
@@ -60,34 +145,76 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!validatedUser.id || !validatedUser.email || !validatedUser.role) {
             console.warn('⚠️ Invalid cached user data, clearing:', validatedUser);
             localStorage.removeItem('user');
+            localStorage.removeItem('userTimestamp');
             validatedUser = null;
           }
         } catch (parseError) {
           console.warn('❌ Failed to parse cached user:', parseError);
           localStorage.removeItem('user');
+          localStorage.removeItem('userTimestamp');
           validatedUser = null;
         }
       }
       
+      // 캐시가 유효한지 확인 (5분 이내면 DB 조회 스킵)
+      let useCache = false;
+      if (validatedUser && savedUserTimestamp) {
+        const cacheAge = Date.now() - parseInt(savedUserTimestamp, 10);
+        if (cacheAge < CACHE_VALIDITY_MS) {
+          console.log(`✅ 캐시 사용 (${Math.round(cacheAge / 1000)}초 경과)`);
+          setUser(validatedUser);
+          setIsLoading(false);
+          useCache = true;
+        }
+      }
+      
+      // 캐시가 유효하면 DB 조회 스킵
+      if (useCache) {
+        return;
+      }
+      
       if (validatedUser) {
         try {
-          // DB에서 최신 정보 확인 (타임아웃: 8초)
-          const { data: dbUser, error: dbError } = await Promise.race([
-            supabase
-              .from('users')
-              .select('user_id, email, username, role, level, template_id, center_name, logo_url, status, is_active')
-              .eq('user_id', validatedUser.id)
-              .maybeSingle(),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('DB query timeout')), 8000)
-            ) as any
-          ]);
+          // DB에서 최신 정보 확인 (타임아웃: 12초, 재시도: 2회)
+          let dbUser = null;
+          let dbError = null;
+          
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const result = await Promise.race([
+                supabase
+                  .from('users')
+                  .select('user_id, email, username, role, level, template_id, center_name, logo_url, status, is_active')
+                  .eq('user_id', validatedUser.id)
+                  .maybeSingle(),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('DB query timeout')), 12000) // 12초로 연장
+                ) as any
+              ]);
+              
+              dbUser = result.data;
+              dbError = result.error;
+              
+              if (!dbError) {
+                break; // 성공하면 재시도 중단
+              }
+            } catch (attemptError) {
+              if (attempt < 2) {
+                console.log(`⚠️ DB 조회 시도 ${attempt} 실패, 재시도 중...`);
+                // 100ms 대기 후 재시도
+                await new Promise(resolve => setTimeout(resolve, 100));
+              } else {
+                throw attemptError;
+              }
+            }
+          }
           
           if (dbUser) {
             // 일반 회원 is_active 체크만 함 (관리자는 is_active 관계없이 로그인 허용)
             if (dbUser.role === 'user' && !dbUser.is_active) {
               // 승인이 취소된 경우 로그아웃
               localStorage.removeItem('user');
+              localStorage.removeItem('userTimestamp');
               await supabase.auth.signOut();
               setIsLoading(false);
               return;
@@ -107,9 +234,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             
             setUser(updatedUser);
             localStorage.setItem('user', JSON.stringify(updatedUser));
+            localStorage.setItem('userTimestamp', Date.now().toString()); // 타임스탠프 저장
           } else {
             // DB에 사용자가 없으면 로그아웃
             localStorage.removeItem('user');
+            localStorage.removeItem('userTimestamp');
             await supabase.auth.signOut();
           }
           
@@ -120,6 +249,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.warn(`⏱️ DB 조회 실패 (${isTimeout ? '타임아웃' : '네트워크 에러'}) - 캐시 사용:`, error?.message);
           console.log('📦 Using cached user:', validatedUser.email);
           setUser(validatedUser);
+          localStorage.setItem('userTimestamp', Date.now().toString()); // 타임스탠프 갱신
           setIsLoading(false);
         }
       } else {
@@ -343,15 +473,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (response.ok) {
           const { user: userData } = await response.json();
 
+          // is_active 필드 확인 (백엔드 호환성)
+          if (userData.is_active === undefined || userData.is_active === null) {
+            console.warn('⚠️ is_active 필드 없음, 기본값 true 사용');
+            userData.is_active = true;
+          }
+
           // 일반 회원 is_active 체크
           if (userData.role === 'user' && !userData.is_active) {
             throw new Error('회원가입 승인 대기 중입니다. 관리자의 승인을 기다려주세요');
           }
 
-          // 🔧 관리자는 is_active 체크 안 함 (관리자는 계정 생성 시 자동 활성화)
-          // if (['center', 'agency', 'store'].includes(userData.role) && !userData.is_active) {
-          //   throw new Error('시스템 관리자에게 문의하세요');
-          // }
+          // 관리자(센터, 가맹점, 에이전시) is_active 체크
+          if (['center', 'agency', 'store'].includes(userData.role) && !userData.is_active) {
+            throw new Error('시스템 관리자에게 문의하세요');
+          }
 
           const loggedInUser: User = {
             id: userData.user_id,
@@ -370,6 +506,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           setUser(loggedInUser);
           localStorage.setItem('user', JSON.stringify(loggedInUser));
+          localStorage.setItem('userTimestamp', Date.now().toString());
           return loggedInUser;
         }
       } catch (backendError) {
@@ -424,6 +561,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
             setUser(loggedInUser);
             localStorage.setItem('user', JSON.stringify(loggedInUser));
+            localStorage.setItem('userTimestamp', Date.now().toString());
             return loggedInUser;
           }
         }
@@ -505,17 +643,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.signOut(); // Supabase Auth 로그아웃
     setUser(null);
     localStorage.removeItem('user');
+    localStorage.removeItem('userTimestamp'); // 타임스탠프도 제거
   };
 
   const refreshUser = async () => {
     if (!user) return;
 
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('user_id, email, username, role, level, template_id, center_name, logo_url')
-        .eq('user_id', user.id)
-        .single();
+      // 타임아웃: 5초 (백그라운드 동기화 - 빠르게 실패하고 캐시 유지)
+      const { data, error } = await Promise.race([
+        supabase
+          .from('users')
+          .select('user_id, email, username, role, level, template_id, center_name, logo_url')
+          .eq('user_id', user.id)
+          .single(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Background sync timeout')), 5000) // 5초로 단축
+        ) as any
+      ]);
 
       if (error) throw error;
 
@@ -533,9 +678,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setUser(updatedUser);
         localStorage.setItem('user', JSON.stringify(updatedUser));
+        localStorage.setItem('userTimestamp', Date.now().toString()); // 타임스탠프 갱신
       }
-    } catch (error) {
-      // Silent fail
+    } catch (error: any) {
+      // 백그라운드 동기화 실패는 무시 (캐시된 사용자 정보 유지)
+      // 에러를 던져서 호출 코드에서 재시도 가능하게 함
+      throw error;
     }
   };
 

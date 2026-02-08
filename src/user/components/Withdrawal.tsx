@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Send, AlertCircle, Loader2, CheckCircle2, Zap, Info, Wallet as WalletIcon, Crown } from 'lucide-react';
+import { ArrowLeft, Send, AlertCircle, Loader2, CheckCircle2, Zap, Info, Wallet as WalletIcon, Crown, FileText, ExternalLink, Copy } from 'lucide-react';
 import { Screen, WalletData, CoinType } from '../App';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -134,7 +134,7 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
       .subscribe();
 
     return () => {
-      policySubscription.unsubscribe();
+      supabase.removeChannel(policySubscription);
     };
   }, [user]);
 
@@ -392,6 +392,35 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
                 {selectedCoin}
               </span>
             </div>
+            
+            {/* 금액 단축 버튼 (4열) */}
+            <div className="mt-2 grid grid-cols-4 gap-2">
+              <button
+                onClick={() => selectedWallet && setAmount((selectedWallet.balance * 0.25).toString())}
+                className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+              >
+                25%
+              </button>
+              <button
+                onClick={() => selectedWallet && setAmount((selectedWallet.balance * 0.5).toString())}
+                className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+              >
+                50%
+              </button>
+              <button
+                onClick={() => selectedWallet && setAmount((selectedWallet.balance * 0.75).toString())}
+                className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+              >
+                75%
+              </button>
+              <button
+                onClick={handleMaxAmount}
+                className="px-3 py-2 bg-gradient-to-r from-cyan-500 to-purple-500 hover:shadow-lg hover:shadow-cyan-500/30 text-white rounded-lg text-sm font-semibold transition-all"
+              >
+                전액
+              </button>
+            </div>
+            
             <div className="mt-2 flex items-center justify-between text-sm">
               <span className="text-slate-400">
                 사용 가능: {selectedWallet.balance.toFixed(8)} {selectedCoin}
@@ -514,10 +543,25 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
             {recentWithdrawals.map((withdrawal) => (
               <div
                 key={withdrawal.withdrawal_id}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4"
+                className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 hover:border-slate-600/50 transition-all"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-white">-{withdrawal.amount} {withdrawal.coin_type}</span>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                      withdrawal.status === 'completed' 
+                        ? 'bg-green-500/20'
+                        : withdrawal.status === 'pending'
+                        ? 'bg-amber-500/20'
+                        : withdrawal.status === 'processing'
+                        ? 'bg-cyan-500/20'
+                        : 'bg-red-500/20'
+                    }`}>
+                      {withdrawal.status === 'completed' && <CheckCircle2 className="w-4 h-4 text-green-400" />}
+                      {withdrawal.status === 'pending' && <AlertCircle className="w-4 h-4 text-amber-400" />}
+                      {withdrawal.status === 'processing' && <Zap className="w-4 h-4 text-cyan-400" />}
+                    </div>
+                    <span className="text-white font-medium">-{withdrawal.amount} {withdrawal.coin_type}</span>
+                  </div>
                   <span
                     className={`text-xs px-2 py-1 rounded-full ${
                       withdrawal.status === 'completed'
@@ -530,7 +574,7 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
                     }`}
                   >
                     {withdrawal.status === 'completed'
-                      ? '완료'
+                      ? '✓ 완료'
                       : withdrawal.status === 'pending'
                       ? '대기 중'
                       : withdrawal.status === 'processing'
@@ -538,10 +582,55 @@ export function Withdrawal({ wallets, selectedCoin, onNavigate, onSelectCoin }: 
                       : '거부됨'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-slate-400">
+
+                <div className="text-xs text-slate-400 mb-2">
                   <span>{new Date(withdrawal.created_at).toLocaleString('ko-KR')}</span>
-                  <span className="truncate max-w-[120px]">{withdrawal.to_address}</span>
                 </div>
+
+                {/* TXID 섹션 (완료된 출금만) */}
+                {withdrawal.tx_hash && withdrawal.status === 'completed' && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/30">
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileText className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs text-slate-400">거래 ID</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2">
+                      <code className="flex-1 text-xs text-cyan-300 font-mono break-all">
+                        {withdrawal.tx_hash}
+                      </code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(withdrawal.tx_hash);
+                          toast.success('TXID 복사됨');
+                        }}
+                        className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                        title="복사"
+                      >
+                        <Copy className="w-4 h-4 text-cyan-400" />
+                      </button>
+                      <a
+                        href={`https://tronscan.org/#/transaction/${withdrawal.tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                        title="블록체인 탐색기에서 보기"
+                      >
+                        <ExternalLink className="w-4 h-4 text-cyan-400" />
+                      </a>
+                    </div>
+                  </div>
+                )}
+
+                {/* 출금 주소 */}
+                {withdrawal.to_address && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/30">
+                    <div className="text-xs text-slate-400 mb-1">출금 주소</div>
+                    <div className="text-xs text-slate-300 font-mono break-all">
+                      {withdrawal.to_address}
+                    </div>
+                  </div>
+                )}
+
                 {withdrawal.supertransaction_payload && (
                   <div className="mt-2 flex items-center gap-1 text-xs text-purple-400">
                     <Zap className="w-3 h-3" />

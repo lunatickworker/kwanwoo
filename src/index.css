@@ -124,6 +124,7 @@
     --color-cyan-400: oklch(.789 .154 211.53);
     --color-cyan-500: oklch(.715 .143 215.221);
     --color-cyan-600: oklch(.609 .126 221.723);
+    --color-cyan-700: oklch(.516 .107 225.893);
     --color-blue-300: oklch(.809 .105 251.813);
     --color-blue-400: oklch(.707 .165 254.624);
     --color-blue-500: oklch(.623 .214 259.815);
@@ -1234,6 +1235,10 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .grid-cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .grid-cols-5 {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
@@ -1850,6 +1855,14 @@
 
   .bg-cyan-500 {
     background-color: var(--color-cyan-500);
+  }
+
+  .bg-cyan-600 {
+    background-color: var(--color-cyan-600);
+  }
+
+  .bg-cyan-700 {
+    background-color: var(--color-cyan-700);
   }
 
   .bg-cyan-500\/5 {
@@ -3908,6 +3921,12 @@
   @media (hover: hover) {
     .hover\:bg-cyan-600:hover {
       background-color: var(--color-cyan-600);
+    }
+  }
+
+  @media (hover: hover) {
+    .hover\:bg-cyan-700:hover {
+      background-color: var(--color-cyan-700);
     }
   }
 

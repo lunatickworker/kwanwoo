@@ -1,8 +1,9 @@
-import { ChevronRight, ArrowDownToLine, ArrowUpFromLine, DollarSign, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { ChevronRight, ArrowDownToLine, ArrowUpFromLine, DollarSign, Clock, CheckCircle, XCircle, FileText, Copy, ExternalLink } from 'lucide-react';
 import { Screen, Transaction } from '../App';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { toast } from 'sonner@2.0.3';
 
 interface TransferRequest {
   request_id: string;
@@ -13,6 +14,7 @@ interface TransferRequest {
   admin_note: string | null;
   created_at: string;
   approved_at: string | null;
+  tx_hash?: string; // 트랜잭션 TXID
 }
 
 interface TransactionsProps {
@@ -221,6 +223,39 @@ export function Transactions({ transactions, onNavigate }: TransactionsProps) {
                     </div>
                   )}
                 </div>
+
+                {request.tx_hash && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/50">
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileText className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs text-slate-400">거래 ID</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2">
+                      <code className="flex-1 text-xs text-cyan-300 font-mono break-all">
+                        {request.tx_hash}
+                      </code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(request.tx_hash);
+                          toast.success('TXID 복사됨');
+                        }}
+                        className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                        title="복사"
+                      >
+                        <Copy className="w-4 h-4 text-cyan-400" />
+                      </button>
+                      <a
+                        href={`https://tronscan.org/#/transaction/${request.tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                        title="블록체인 탐색기에서 보기"
+                      >
+                        <ExternalLink className="w-4 h-4 text-cyan-400" />
+                      </a>
+                    </div>
+                  </div>
+                )}
 
                 {request.user_note && (
                   <div className="mt-3 pt-3 border-t border-slate-700/50">

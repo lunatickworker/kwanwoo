@@ -312,107 +312,162 @@ export function CoinWithdrawal() {
 
       {/* 출금 폼 */}
       {showForm && selectedWallet && (
-        <NeonCard className="bg-gradient-to-br from-slate-800 to-slate-900">
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold text-white">
-                {selectedWallet.coin_type} 출금
-              </h3>
+        <div 
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[10000] p-4"
+          onClick={() => setShowForm(false)}
+        >
+          <div 
+            className="bg-slate-900 border border-cyan-500/30 rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">{selectedWallet.coin_type} 출금</h3>
               <button
                 onClick={() => setShowForm(false)}
-                className="text-slate-400 hover:text-white transition-colors"
+                className="text-slate-400 hover:text-white"
               >
-                <X className="w-6 h-6" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-4">
-              {/* 출금 주소 */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  수신 지갑 주소
-                </label>
-                <input
-                  type="text"
-                  value={toAddress}
-                  onChange={(e) => setToAddress(e.target.value)}
-                  placeholder="지갑 주소 입력"
-                  className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 transition-colors"
-                />
-              </div>
-
-              {/* 출금액 */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  출금액
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="출금액 입력"
-                    className="flex-1 px-4 py-3 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 transition-colors"
-                  />
-                  <button
-                    onClick={() => setAmount(selectedWallet.balance.toString())}
-                    className="px-4 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
-                  >
-                    전액
-                  </button>
-                </div>
-                <p className="text-xs text-slate-400 mt-2">
-                  보유: {selectedWallet.balance.toFixed(8)} {selectedWallet.coin_type}
+            {/* 보유량 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">보유량</label>
+              <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                <p className="text-lg font-semibold text-cyan-400">
+                  {selectedWallet.balance.toFixed(8)} {selectedWallet.coin_type}
                 </p>
+                {selectedWallet.price_krw && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    ≈ ₩ {(selectedWallet.balance * selectedWallet.price_krw).toLocaleString()}
+                  </p>
+                )}
               </div>
+            </div>
 
-              {/* 가스비 */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  가스비
-                </label>
-                <p className="text-lg font-semibold text-slate-200">
-                  {gasFee.toFixed(8)} {selectedWallet.coin_type}
-                </p>
-              </div>
+            {/* 받을 지갑 주소 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">받을 지갑 주소</label>
+              <input
+                type="text"
+                value={toAddress}
+                onChange={(e) => setToAddress(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="지갑 주소 입력"
+                className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
 
-              {/* 경고 */}
-              <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex gap-2">
-                <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-yellow-300">
-                  출금은 취소할 수 없습니다. 주소를 다시 한 번 확인해주세요.
-                </p>
-              </div>
+            {/* 출금액 입력 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">출금액</label>
+              <input
+                type="number"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="출금액 입력"
+                className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
 
-              {/* 버튼 */}
-              <div className="flex gap-3 pt-4">
+            {/* 출금액 단축버튼 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <div className="grid grid-cols-4 gap-2">
                 <button
-                  onClick={() => setShowForm(false)}
-                  className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-semibold transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAmount((selectedWallet.balance * 0.25).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
                 >
-                  취소
+                  25%
                 </button>
                 <button
-                  onClick={handleSubmitWithdrawal}
-                  disabled={isSubmitting}
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-all duration-300 flex items-center justify-center gap-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAmount((selectedWallet.balance * 0.5).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
                 >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      처리중...
-                    </>
-                  ) : (
-                    <>
-                      <Send className="w-4 h-4" />
-                      출금 요청
-                    </>
-                  )}
+                  50%
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAmount((selectedWallet.balance * 0.75).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                >
+                  75%
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAmount(selectedWallet.balance.toString());
+                  }}
+                  className="px-3 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/30 text-white rounded-lg text-sm font-semibold transition-all"
+                >
+                  전액
                 </button>
               </div>
             </div>
+
+            {/* 예측 수수료 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">예측 수수료</label>
+              <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                <p className="text-base font-semibold text-slate-200">
+                  {gasFee.toFixed(8)} {selectedWallet.coin_type}
+                </p>
+                {selectedWallet.price_krw && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    ≈ ₩ {(gasFee * selectedWallet.price_krw).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* 경고 */}
+            <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex gap-2">
+              <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-yellow-300">출금은 취소할 수 없습니다. 주소를 다시 한 번 확인해주세요.</p>
+            </div>
+
+            {/* 버튼 */}
+            <div className="flex gap-3">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowForm(false);
+                }}
+                className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-semibold transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSubmitWithdrawal();
+                }}
+                disabled={isSubmitting}
+                className="flex-1 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    처리중...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    출금
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-        </NeonCard>
+        </div>
       )}
 
       {/* 출금 이력 */}

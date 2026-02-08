@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Copy, QrCode, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Copy, QrCode, CheckCircle2, AlertCircle, Loader2, FileText, ExternalLink } from 'lucide-react';
 import { Screen, WalletData, CoinType } from '../App';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -335,10 +335,15 @@ export function Deposit({ wallets, selectedCoin, onNavigate, onSelectCoin }: Dep
             {recentDeposits.map((deposit) => (
               <div
                 key={deposit.deposit_id}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4"
+                className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 hover:border-slate-600/50 transition-all"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-white">+{deposit.amount} {deposit.coin_type}</span>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                      <CheckCircle2 className="w-4 h-4 text-green-400" />
+                    </div>
+                    <span className="text-white font-medium">+{deposit.amount} {deposit.coin_type}</span>
+                  </div>
                   <span
                     className={`text-xs px-2 py-1 rounded-full ${
                       deposit.status === 'confirmed'
@@ -349,18 +354,52 @@ export function Deposit({ wallets, selectedCoin, onNavigate, onSelectCoin }: Dep
                     }`}
                   >
                     {deposit.status === 'confirmed'
-                      ? '확인 완료'
+                      ? '✓ 확인 완료'
                       : deposit.status === 'pending'
                       ? '확인 중'
                       : '처리 중'}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-slate-400">
+                
+                <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
                   <span>{new Date(deposit.created_at).toLocaleString('ko-KR')}</span>
-                  {deposit.tx_hash && (
-                    <span className="truncate max-w-[120px]">{deposit.tx_hash}</span>
-                  )}
                 </div>
+
+                {/* TXID 섹션 */}
+                {deposit.tx_hash && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/30">
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileText className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs text-slate-400">거래 ID</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-2">
+                      <code className="flex-1 text-xs text-cyan-300 font-mono break-all">
+                        {deposit.tx_hash}
+                      </code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(deposit.tx_hash);
+                          toast.success('TXID 복사됨');
+                        }}
+                        className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                        title="복사"
+                      >
+                        <Copy className="w-4 h-4 text-cyan-400" />
+                      </button>
+                      {deposit.from_address && (
+                        <a
+                          href={`https://tronscan.org/#/transaction/${deposit.tx_hash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 hover:bg-cyan-500/20 rounded transition-colors flex-shrink-0"
+                          title="블록체인 탐색기에서 보기"
+                        >
+                          <ExternalLink className="w-4 h-4 text-cyan-400" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

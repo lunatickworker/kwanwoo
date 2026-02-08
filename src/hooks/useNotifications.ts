@@ -96,61 +96,50 @@ export function useNotifications(userId: string | undefined, isAdmin: boolean = 
     };
   }, [userId]);
 
-  // 관리자 실시간 구독 (기존 로직 유지)
+  // 관리자 실시간 구독 - notifications 테이블의 변경만 감지 (INSERT는 Edge Function에서만)
   useEffect(() => {
     if (!userId || !isAdmin) return;
 
-    const channels: any[] = [];
-
-    // 1. 새 회원가입 감지
-    const signupChannel = supabase
-      .channel('admin-signups')
+    // notifications 테이블 변경 감지 → fetchNotifications() 호출
+    const notifChannel = supabase
+      .channel(`admin-notifications-${userId}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'users' },
-        async (payload: any) => {
-          // DB에 알림 생성
-          await supabase.from('notifications').insert({
-            user_id: userId,
-            type: 'signup',
-            title: '새 회원 가입',
-            message: `${payload.new.username || payload.new.email}님이 가입했습니다.`,
-            is_read: false,
-            data: payload.new,
-          });
-        }
-      )
-      .subscribe();
-    channels.push(signupChannel);
-
-    // 2. 계좌 인증 요청 감지
-    const verificationChannel = supabase
-      .channel('admin-verifications')
-      .on(
-        'postgres_changes',
-        { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'account_verifications',
-          filter: 'status=eq.pending'
+        {
+          event: '*',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${userId}`
         },
-        async (payload: any) => {
-          // DB에 알림 생성
-          await supabase.from('notifications').insert({
-            user_id: userId,
-            type: 'verification_request',
-            title: '1원 인증 요청',
-            message: `새로운 계좌 인증 요청이 있습니다.`,
-            is_read: false,
-            data: payload.new,
-          });
+        async () => {
+          // Edge Function에서 생성한 알림을 감지하여 UI 갱신
+          console.log('🔔 Notification change detected (admin), refreshing...');
+          const { data, error } = await supabase
+            .from('notifications')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false })
+            .limit(100);
+          
+          if (!error && data) {
+            const formattedNotifications: Notification[] = data.map(n => ({
+              id: n.notification_id,
+              user_id: n.user_id,
+              type: n.type as Notification['type'],
+              title: n.title,
+              message: n.message,
+              read: n.is_read,
+              created_at: n.created_at,
+              data: n.data,
+            }));
+            setNotifications(formattedNotifications);
+          }
         }
       )
       .subscribe();
-    channels.push(verificationChannel);
 
     return () => {
-      channels.forEach(channel => channel.unsubscribe());
+      notifChannel.unsubscribe();
     };
   }, [userId, isAdmin]);
 

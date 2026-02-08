@@ -116,10 +116,6 @@ export function SettlementManagement() {
       return;
     }
 
-    // 기존 채널 제거
-    supabase.removeChannel('center-settlement-deposits-realtime');
-    supabase.removeChannel('center-settlement-withdrawals-realtime');
-
     // deposits 테이블의 변경사항 구독
     const depositsChannel = supabase
       .channel('center-settlement-deposits-realtime')
@@ -170,8 +166,9 @@ export function SettlementManagement() {
     }, 30000);
 
     return () => {
-      depositsChannel.unsubscribe();
-      withdrawalsChannel.unsubscribe();
+      // ✅ 올바른 방식으로 채널 구독 해제
+      supabase.removeChannel(depositsChannel);
+      supabase.removeChannel(withdrawalsChannel);
       clearInterval(autoRefreshInterval);
     };
   }, [selectedDate, user]);

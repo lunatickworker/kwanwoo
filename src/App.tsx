@@ -5,6 +5,7 @@ import { UserApp } from "./user/App";
 import { AdminApp } from "./components/AdminApp";
 import { MasterApp } from "./components/MasterApp";
 import { Login } from "./components/Login";
+import { MobileLogin } from "./user/components/MobileLogin";
 import {
   getTenantInfo,
   getDomainType,
@@ -18,7 +19,7 @@ import "./utils/debug-users";
 import "./utils/fix-template-id"; // ✅ 템플릿 ID 수동 수정 유틸리티 로드
 
 // 라우팅 타입 정의
-type Route ="admin"
+type Route = "user" | "admin" | "admin-login" | "user-signup" | "center" | "store" | "master" | "not-found"
 
 // Tenant 정보 인터페이스
 interface TenantContext {
@@ -115,6 +116,12 @@ function AppContent() {
       return;
     }
 
+    // #signup 경로 (사용자 회원가입)
+    if (hash === "signup") {
+      setCurrentRoute("user-signup");
+      return;
+    }
+
     // #admin 경로 (센터/에이전시/가맹점 관리)
     if (hash.startsWith("admin")) {
       if (
@@ -182,6 +189,10 @@ function AppContent() {
       else if (hash === "admin/login") {
         setCurrentRoute("admin-login");
       }
+      // #signup
+      else if (hash === "signup") {
+        setCurrentRoute("user-signup");
+      }
       // #admin
       else if (hash.startsWith("admin")) {
         if (
@@ -234,6 +245,10 @@ function AppContent() {
 
   if (currentRoute === "admin-login") {
     return <Login onLoginSuccess={() => {}} />;
+  }
+
+  if (currentRoute === "user-signup") {
+    return <MobileLogin initialShowSignUp={true} />;
   }
 
   // Admin 페이지 (center, agency, store, admin 역할)

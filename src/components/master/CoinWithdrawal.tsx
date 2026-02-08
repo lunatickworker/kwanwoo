@@ -323,10 +323,27 @@ export function CoinWithdrawal() {
             </div>
 
             <div className="space-y-4">
-              {/* 출금 주소 */}
+              {/* 보유량 */}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  수신 지갑 주소
+                  보유량
+                </label>
+                <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                  <p className="text-lg font-semibold text-cyan-400">
+                    {selectedWallet.balance.toFixed(8)} {selectedWallet.coin_type}
+                  </p>
+                  {selectedWallet.price_krw && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      ≈ ₩ {(selectedWallet.balance * selectedWallet.price_krw).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* 받을 지갑 주소 */}
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  받을 지갑 주소
                 </label>
                 <input
                   type="text"
@@ -342,34 +359,60 @@ export function CoinWithdrawal() {
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   출금액
                 </label>
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="출금액 입력"
-                    className="flex-1 px-4 py-3 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 transition-colors"
-                  />
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="출금액 입력"
+                  className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              {/* 출금액 단축버튼 */}
+              <div>
+                <div className="grid grid-cols-4 gap-2">
+                  <button
+                    onClick={() => setAmount((selectedWallet.balance * 0.25).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    25%
+                  </button>
+                  <button
+                    onClick={() => setAmount((selectedWallet.balance * 0.5).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    50%
+                  </button>
+                  <button
+                    onClick={() => setAmount((selectedWallet.balance * 0.75).toString())}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                  >
+                    75%
+                  </button>
                   <button
                     onClick={() => setAmount(selectedWallet.balance.toString())}
-                    className="px-4 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                    className="px-3 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/30 text-white rounded-lg text-sm font-semibold transition-all"
                   >
                     전액
                   </button>
                 </div>
-                <p className="text-xs text-slate-400 mt-2">
-                  보유: {selectedWallet.balance.toFixed(8)} {selectedWallet.coin_type}
-                </p>
               </div>
 
-              {/* 가스비 */}
+              {/* 예측 수수료 */}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  가스비
+                  예측 수수료
                 </label>
-                <p className="text-lg font-semibold text-slate-200">
-                  {gasFee.toFixed(8)} {selectedWallet.coin_type}
-                </p>
+                <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                  <p className="text-base font-semibold text-slate-200">
+                    {gasFee.toFixed(8)} {selectedWallet.coin_type}
+                  </p>
+                  {selectedWallet.price_krw && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      ≈ ₩ {(gasFee * selectedWallet.price_krw).toLocaleString()}
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* 경고 */}

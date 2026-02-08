@@ -39,7 +39,6 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [isWithdrawing, setIsWithdrawing] = useState(false);
 
-  // 주소 복사 함수
   const copyAddress = async (address: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -307,10 +306,11 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
       onClick={onClose}
     >
       {/* 프로필 카드 */}
-      <div 
-        className="mt-16 mr-4 w-[480px] bg-slate-900/95 backdrop-blur-xl border border-cyan-500/30 rounded-lg shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      {!showWithdrawForm && (
+        <div 
+          className="mt-16 mr-4 w-[480px] bg-slate-900/95 backdrop-blur-xl border border-cyan-500/30 rounded-lg shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
         {/* 헤더 */}
         <div className="flex items-center justify-between p-6 border-b border-cyan-500/20">
           <div>
@@ -489,7 +489,7 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
                           className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
                           title="코인 출금"
                         >
-                          <ArrowUpRight className="w-4 h-4" />
+                          <Send className="w-4 h-4" />
                         </button>
                         
                         {/* 휴지통 아이콘 */}
@@ -528,92 +528,162 @@ export function MasterProfileCard({ onClose }: MasterProfileCardProps) {
             </div>
           )}
         </div>
+        </div>
+      )}
 
-        {/* 출금 폼 모달 */}
-        {showWithdrawForm && withdrawingWallet && (
-          <div className="absolute inset-0 bg-black/50 rounded-lg flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-cyan-500/30 rounded-lg p-6 w-full max-w-md space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-white">{withdrawingWallet.coin_type} 출금</h3>
-                <button
-                  onClick={() => setShowWithdrawForm(false)}
-                  className="text-slate-400 hover:text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
+      {/* 출금 폼 모달 - 프로필 카드와 독립적으로 렌더링 */}
+      {showWithdrawForm && withdrawingWallet && (
+        <div 
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[10000] p-4"
+          onClick={() => {
+            setShowWithdrawForm(false);
+            setWithdrawToAddress('');
+            setWithdrawAmount('');
+            setWithdrawingWallet(null);
+          }}
+        >
+          <div 
+            className="bg-slate-900 border border-cyan-500/30 rounded-lg p-6 w-full max-w-md space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">{withdrawingWallet.coin_type} 출금</h3>
+              <button
+                onClick={() => {
+                  setShowWithdrawForm(false);
+                  setWithdrawToAddress('');
+                  setWithdrawAmount('');
+                  setWithdrawingWallet(null);
+                }}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-              {/* 주소 입력 */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">수신 지갑 주소</label>
-                <input
-                  type="text"
-                  value={withdrawToAddress}
-                  onChange={(e) => setWithdrawToAddress(e.target.value)}
-                  placeholder="지갑 주소 입력"
-                  className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-
-              {/* 출금액 입력 */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">출금액</label>
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    value={withdrawAmount}
-                    onChange={(e) => setWithdrawAmount(e.target.value)}
-                    placeholder="출금액 입력"
-                    className="flex-1 px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
-                  />
-                  <button
-                    onClick={() => setWithdrawAmount(withdrawingWallet.balance.toString())}
-                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold"
-                  >
-                    전액
-                  </button>
-                </div>
-                <p className="text-xs text-slate-400 mt-1">
-                  보유: {withdrawingWallet.balance.toFixed(8)} {withdrawingWallet.coin_type}
+            {/* 보유량 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">보유량</label>
+              <div className="px-4 py-3 bg-slate-700/30 border border-slate-600 rounded-lg">
+                <p className="text-lg font-semibold text-cyan-400">
+                  {withdrawingWallet.balance.toFixed(8)} {withdrawingWallet.coin_type}
                 </p>
+                {withdrawingWallet.price_krw && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    ≈ ₩ {(withdrawingWallet.balance * withdrawingWallet.price_krw).toLocaleString()}
+                  </p>
+                )}
               </div>
+            </div>
 
-              {/* 경고 */}
-              <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex gap-2">
-                <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-yellow-300">출금은 취소할 수 없습니다. 주소를 다시 한 번 확인해주세요.</p>
-              </div>
+            {/* 받을 지갑 주소 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">받을 지갑 주소</label>
+              <input
+                type="text"
+                value={withdrawToAddress}
+                onChange={(e) => setWithdrawToAddress(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="지갑 주소 입력"
+                className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
 
-              {/* 버튼 */}
-              <div className="flex gap-3">
+            {/* 출금액 입력 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <label className="block text-sm font-medium text-slate-300 mb-2">출금액</label>
+              <input
+                type="number"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="출금액 입력"
+                className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+
+            {/* 출금액 단축버튼 */}
+            <div onClick={(e) => e.stopPropagation()}>
+              <div className="grid grid-cols-4 gap-2">
                 <button
-                  onClick={() => setShowWithdrawForm(false)}
-                  className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-semibold transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWithdrawAmount((withdrawingWallet.balance * 0.25).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
                 >
-                  취소
+                  25%
                 </button>
                 <button
-                  onClick={handleWithdraw}
-                  disabled={isWithdrawing}
-                  className="flex-1 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWithdrawAmount((withdrawingWallet.balance * 0.5).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
                 >
-                  {isWithdrawing ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      처리중...
-                    </>
-                  ) : (
-                    <>
-                      <Send className="w-4 h-4" />
-                      출금
-                    </>
-                  )}
+                  50%
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWithdrawAmount((withdrawingWallet.balance * 0.75).toString());
+                  }}
+                  className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors"
+                >
+                  75%
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWithdrawAmount(withdrawingWallet.balance.toString());
+                  }}
+                  className="px-3 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/30 text-white rounded-lg text-sm font-semibold transition-all"
+                >
+                  전액
                 </button>
               </div>
             </div>
+
+            {/* 경고 */}
+            <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex gap-2">
+              <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-yellow-300">출금은 취소할 수 없습니다. 주소를 다시 한 번 확인해주세요.</p>
+            </div>
+
+            {/* 버튼 */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowWithdrawForm(false);
+                  setWithdrawToAddress('');
+                  setWithdrawAmount('');
+                  setWithdrawingWallet(null);
+                }}
+                disabled={isWithdrawing}
+                className="flex-1 px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleWithdraw}
+                disabled={isWithdrawing || !withdrawToAddress || !withdrawAmount}
+                className="flex-1 px-3 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 hover:shadow-lg hover:shadow-cyan-500/50 text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isWithdrawing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    처리 중...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    출금 실행                  </>
+                )}
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
