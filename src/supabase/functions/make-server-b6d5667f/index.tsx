@@ -686,7 +686,7 @@ app.use('*', logger(console.log));
 app.use(
   "/*",
   cors({
-    origin: ['http://localhost:3001', 'http://localhost:5173', 'https://kwanwoo-coin.vercel.app'],
+    origin: ['http://localhost:3001', 'http://localhost:5173', 'https://kwanwoo-coin.vercel.app', 'https://www.ry-p01.com'],
     allowHeaders: [
       "Content-Type",
       "Authorization",
