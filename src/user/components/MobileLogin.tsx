@@ -72,16 +72,9 @@ export function MobileLogin({ initialShowSignUp = false }: MobileLoginProps) {
     try {
       const result = await login(email, password);
       
-      // 관리자는 사용자 페이지 로그인 불가
-      if (result && result.role === 'admin') {
-        toast.error('관리자는 사용자 페이지에 로그인할 수 없습니다', {
-          position: 'top-center',
-          duration: 3000,
-        });
-        setIsLoading(false);
-        return;
-      }
-      
+      // 사용자 페이지에서는 모든 계정 허용 (관리자도 로그인 가능)
+      console.log('🔓 사용자 페이지 로그인:', { role: result?.role, email: result?.email });
+
       // 로그인 유지 체크 시 localStorage에 저장
       if (rememberMe) {
         localStorage.setItem('rememberMe', 'true');
@@ -90,6 +83,12 @@ export function MobileLogin({ initialShowSignUp = false }: MobileLoginProps) {
         localStorage.removeItem('rememberMe');
         localStorage.removeItem('savedEmail');
       }
+
+      console.log('🔓 사용자 로그인 완료:', { role: result.role, email: result.email });
+      
+      // 사용자 로그인 페이지에서는 hash를 설정하지 않음
+      // 즉, 관리자가 로그인해도 사용자 페이지에 머물러야 함
+      console.log('➡️ 사용자 페이지에 머물러있음 (hash 유지)');
       
       // toast.success('로그인 성공! 환영합니다 🎉', {
       //   position: 'top-center',

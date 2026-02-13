@@ -48,7 +48,7 @@ export function UserApp() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    if (user && user.role === 'user') {
+    if (user) {
       fetchWallets();
       fetchTransactions();
       preloadCoinRates();
@@ -116,11 +116,6 @@ export function UserApp() {
 
   // 로그인하지 않은 경우 모바일 로그인 페이지 표시
   if (!user) {
-    return <MobileLogin />;
-  }
-
-  // 관리자인 경우 사용자 페이지 로그인 화면 표시
-  if (user.role === 'admin') {
     return <MobileLogin />;
   }
 

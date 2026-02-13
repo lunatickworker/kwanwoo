@@ -1,13 +1,610 @@
 // 트랜잭션 전송 및 관리 API
 import { Hono } from "npm:hono";
+import { cors } from "npm:hono/cors";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const transactionRouter = new Hono();
+
+// CORS 설정
+transactionRouter.use(
+  '/*',
+  cors({
+    origin: ['http://localhost:3001', 'http://localhost:5173', 'https://kwanwoo-coin.vercel.app'],
+    allowHeaders: [
+      'Content-Type',
+      'Authorization',
+      'apikey',
+      'x-client-info',
+      'x-supabase-auth',
+      'x-supabase-client-version'
+    ],
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    maxAge: 86400
+  })
+);
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
 );
+
+// ===== Endpoint 라우팅 미들웨어 =====
+transactionRouter.post('/', async (c) => {
+  try {
+    console.log('🔄 [transactionRouter POST /] 핸들러 도달!');
+    console.log('   Method:', c.req.method);
+    console.log('   Path:', c.req.path);
+    console.log('   URL:', c.req.url);
+    
+    const body = await c.req.json();
+    console.log('📥 Request body:', { 
+      endpoint: body.endpoint, 
+      userId: body.userId?.substring(0, 8) 
+    });
+    
+    const endpoint = body.endpoint;
+
+    if (!endpoint) {
+      console.error('❌ endpoint 누락');
+      return c.json({ 
+        success: false, 
+        error: 'endpoint가 필요합니다' 
+      }, 400);
+    }
+
+    console.log(`📍 라우팅: ${endpoint}`);
+
+    // endpoint에 따라 적절한 핸들러 호출
+    if (endpoint === '/swap/tron') {
+      return await handleSwapTron(c, body);
+    } else {
+      return c.json({ 
+        success: false, 
+        error: `지원하지 않는 endpoint: ${endpoint}` 
+      }, 400);
+    }
+  } catch (error: any) {
+    console.error('❌ Endpoint 라우팅 실패:', error);
+    return c.json({
+      success: false,
+      error: error.message || 'endpoint 처리 실패'
+    }, 500);
+  }
+});
+
+// ===== Endpoint 핸들러 =====
+async function handleSwapTron(c: any, body: any) {
+  const {
+    userId,
+    fromCoin,
+    toCoin,
+    fromAmount,
+    toAmount,
+    exchangeRate,
+    fee
+  } = body;
+
+  try {
+    console.log(`🔄 [TRON Swap] 요청: ${fromAmount} ${fromCoin} -> ${toAmount} ${toCoin}`);
+
+    // ✅ 빠른 검증만 수행 후 바로 반환 (타임아웃 방지)
+    
+    // 1. 기본 파라미터 검증
+    if (!userId || !fromCoin || !toCoin || !fromAmount || !toAmount) {
+      return c.json({
+        success: false,
+        error: '필수 파라미터 누락'
+      }, 400);
+    }
+
+    // 2. 지갑 존재 여부만 빠르게 확인
+    const { data: walletData, error: walletError } = await supabase
+      .from('wallets')
+      .select('wallet_id, address, encrypted_private_key, coin_type, user_id')
+      .eq('user_id', userId)
+      .eq('coin_type', fromCoin)
+      .single();
+
+    if (walletError || !walletData?.encrypted_private_key) {
+      console.error('❌ 지갑 조회 실패:', walletError);
+      return c.json({
+        success: false,
+        error: '지갑 정보를 찾을 수 없습니다'
+      }, 404);
+    }
+
+    // 3. 토큰 정보를 DB에서 조회 (contract addresses)
+    console.log(`🔍 토큰 정보 조회 중: ${fromCoin}, ${toCoin}`);
+    
+    const { data: fromTokenData, error: fromError } = await supabase
+      .from('supported_tokens')
+      .select('contract_address, decimals')
+      .eq('symbol', fromCoin)
+      .single();
+    
+    const { data: toTokenData, error: toError } = await supabase
+      .from('supported_tokens')
+      .select('contract_address, decimals')
+      .eq('symbol', toCoin)
+      .single();
+    
+    if (fromError || toError) {
+      console.error(`❌ 토큰 정보 조회 실패:`, { fromError, toError });
+      return c.json({
+        success: false,
+        error: `토큰 정보 조회 실패: ${fromCoin} 또는 ${toCoin}`
+      }, 400);
+    }
+
+    // 유효하지 않은 주소는 NULL로 변환 (processSwapAsync에서 WTRX lookup 트리거)
+    console.log('🔍 주소 유효성 pre-check (DB에서 가져온 주소)...');
+    
+    if (fromTokenData?.contract_address && !isValidTronAddress(fromTokenData.contract_address)) {
+      console.warn(`⚠️ ${fromCoin}의 DB 주소가 invalid (${fromTokenData.contract_address.length}자), NULL로 설정`);
+      fromTokenData.contract_address = null;
+    }
+    
+    if (toTokenData?.contract_address && !isValidTronAddress(toTokenData.contract_address)) {
+      console.warn(`⚠️ ${toCoin}의 DB 주소가 invalid (${toTokenData.contract_address.length}자), NULL로 설정`);
+      toTokenData.contract_address = null;
+    }
+
+    const tokenAddresses: Record<string, string> = {
+      [fromCoin]: fromTokenData.contract_address,
+      [toCoin]: toTokenData.contract_address
+    };
+
+    console.log(`✅ 토큰 정보 조회 완료:`, {
+      [fromCoin]: tokenAddresses[fromCoin],
+      [toCoin]: tokenAddresses[toCoin]
+    });
+
+    // 4. DB에 pending 상태로 저장 (즉시 반환)
+    const { data: swapRecord, error: insertError } = await supabase
+      .from('coin_swaps')
+      .insert({
+        user_id: userId,
+        from_coin: fromCoin,
+        to_coin: toCoin,
+        from_amount: parseFloat(fromAmount.toString()),
+        to_amount: parseFloat(toAmount.toString()),
+        exchange_rate: parseFloat(exchangeRate.toString()),
+        fee: parseFloat(fee.toString()),
+        fee_coin: toCoin,
+        status: 'processing',
+        tx_hash: null,
+        method: 'standard',
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('❌ DB 저장 실패:', insertError);
+      return c.json({
+        success: false,
+        error: 'DB 저장 실패'
+      }, 500);
+    }
+
+    console.log(`⏳ 스왑 처리 시작: ${swapRecord.swap_id}`);
+
+    // 5. 백그라운드에서 비동기로 스왑 처리 (타임아웃 없음)
+    processSwapAsync(userId, fromCoin, toCoin, fromAmount, toAmount, exchangeRate, fee, walletData, swapRecord.swap_id, tokenAddresses);
+
+    // 6. 즉시 처리 중 상태로 반환 (클라이언트는 폴링으로 상태 확인)
+    return c.json({
+      success: true,
+      status: 'processing',
+      swap_id: swapRecord.swap_id,
+      message: '스왑이 처리 중입니다. 잠시 후 결과를 확인해주세요.'
+    }, 202);
+
+  } catch (error: any) {
+    console.error('❌ [TRON Swap] 요청 처리 실패:', error.message);
+
+    return c.json({
+      success: false,
+      error: error.message || 'TRON 스왑 요청 실패'
+    }, 500);
+  }
+}
+
+/**
+ * 백그라운드에서 스왑 비동기 처리
+ * 타임아웃 없이 완료될 때까지 실행
+ */
+async function processSwapAsync(
+  userId: string,
+  fromCoin: string,
+  toCoin: string,
+  fromAmount: string | number,
+  toAmount: string | number,
+  exchangeRate: string | number,
+  fee: string | number,
+  walletData: any,
+  swapId: string,
+  tokenAddresses: Record<string, string>
+) {
+  try {
+    console.log(`🔄 [비동기] 스왑 처리 시작: ${swapId}`);
+
+    // 1. 개인키 복호화
+    console.log('🔑 개인키 복호화 중...');
+    const decryptedPrivateKey = await Promise.race([
+      decryptPrivateKey(walletData.encrypted_private_key),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('개인키 복호화 타임아웃')), 10000)
+      )
+    ]) as string;
+
+    // 2. TronWeb 초기화
+    console.log('⚙️ TronWeb 초기화 중...');
+    let TronWebClass: any;
+    let tronweb: any;
+    
+    try {
+      // v6 시도
+      const TronWebModule = await import('npm:tronweb@6');
+      console.log('📦 TronWeb@6 모듈 로드됨');
+      
+      // v6는 TronWeb을 named export로 포함
+      TronWebClass = TronWebModule.TronWeb || TronWebModule.default || TronWebModule;
+      console.log(`📦 TronWeb@6 구조의 키:`, Object.keys(TronWebModule).slice(0, 10));
+      
+      // 초기화 시도
+      tronweb = new TronWebClass({
+        fullHost: 'https://api.trongrid.io',
+        privateKey: decryptedPrivateKey,
+        headers: { "TRON-PRO-API-KEY": Deno.env.get('TRON_API_KEY') || '' }
+      });
+      console.log('✅ TronWeb@6 초기화 완료');
+    } catch (e6) {
+      console.log('⚠️ TronWeb@6 실패, v5 시도:', e6.message);
+      
+      try {
+        // v5 시도
+        const TronWebModule = await import('npm:tronweb@5.4.0');
+        console.log('📦 TronWeb@5 모듈 로드됨');
+        
+        TronWebClass = TronWebModule.default || TronWebModule;
+        tronweb = new TronWebClass({
+          fullHost: 'https://api.trongrid.io',
+          privateKey: decryptedPrivateKey,
+          headers: { "TRON-PRO-API-KEY": Deno.env.get('TRON_API_KEY') || '' }
+        });
+        console.log('✅ TronWeb@5 초기화 완료');
+      } catch (e5) {
+        throw new Error(`TronWeb 초기화 실패 (v6: ${e6.message}, v5: ${e5.message})`);
+      }
+    }
+
+    // 3. 스왑 실행 (타임아웃 30초)
+    console.log('🔄 JustSwap 호출 중...');
+    let fromToken = tokenAddresses[fromCoin];
+    let toToken = tokenAddresses[toCoin];
+    
+    // DB에서 JustSwap Router 주소 조회
+    console.log('🔍 JustSwap Router 주소 조회 중...');
+    const { data: routerData, error: routerError } = await supabase
+      .from('supported_tokens')
+      .select('contract_address')
+      .eq('symbol', 'JUSTSWAP_ROUTER_V2')
+      .single();
+    
+    if (routerError || !routerData?.contract_address) {
+      console.error(`❌ JustSwap Router 주소 조회 실패:`, routerError);
+      throw new Error(`JustSwap Router 주소를 찾을 수 없습니다. DB 설정을 확인하세요.`);
+    }
+    
+    let routerAddress = routerData.contract_address;
+    console.log(`✅ JustSwap Router 주소 조회 완료:`, routerAddress);
+    
+    const amountOutMin = Math.floor(Number(toAmount) * 0.99);
+
+    // TRX is native token - need WTRX (Wrapped TRX) for swaps
+    // Query database for WTRX address if needed
+    if (!fromToken || fromToken === 'NULL') {
+      console.log(`⚠️ ${fromCoin}은 native token (NULL contract), WTRX 조회 중...`);
+      const { data: wtrxData, error: wtrxError } = await supabase
+        .from('supported_tokens')
+        .select('contract_address, symbol')
+        .ilike('symbol', '%WTRX%')
+        .single();
+      
+      if (wtrxData?.contract_address && wtrxData.contract_address !== 'NULL' && isValidTronAddress(wtrxData.contract_address)) {
+        fromToken = wtrxData.contract_address;
+        console.log(`✅ ${fromCoin} WTRX 주소 조회 완료 (${wtrxData.symbol}):`, fromToken);
+      } else {
+        console.error(`❌ 유효하지 않은 WTRX 주소:`, wtrxData?.contract_address);
+        throw new Error(`유효하지 않은 WTRX 주소가 DB에 저장됨. 관리자에게 문의하세요. (주소: ${wtrxData?.contract_address})`);
+      }
+    }
+    
+    if (!toToken || toToken === 'NULL') {
+      console.log(`⚠️ ${toCoin}은 native token (NULL contract), WTRX 조회 중...`);
+      const { data: wtrxData, error: wtrxError } = await supabase
+        .from('supported_tokens')
+        .select('contract_address, symbol')
+        .ilike('symbol', '%WTRX%')
+        .single();
+      
+      if (wtrxData?.contract_address && wtrxData.contract_address !== 'NULL' && isValidTronAddress(wtrxData.contract_address)) {
+        toToken = wtrxData.contract_address;
+        console.log(`✅ ${toCoin} WTRX 주소 조회 완료 (${wtrxData.symbol}):`, toToken);
+      } else {
+        console.error(`❌ 유효하지 않은 WTRX 주소:`, wtrxData?.contract_address);
+        throw new Error(`유효하지 않은 WTRX 주소가 DB에 저장됨. 관리자에게 문의하세요. (주소: ${wtrxData?.contract_address})`);
+      }
+    }
+
+    console.log('🔍 주소 변환 전:', {
+      fromToken,
+      toToken,
+      routerAddress,
+      userAddressBase58: walletData.address,
+      fromCoin,
+      toCoin
+    });
+
+    // Address validation before Hex conversion
+    console.log('🔎 주소 유효성 검사 중...');
+    
+    if (!isValidTronAddress(fromToken, tronweb)) {
+      console.error(`❌ 유효하지 않은 fromToken 주소:`, fromToken);
+      throw new Error(`${fromCoin}의 contract address가 유효하지 않습니다. (${fromToken}) DB 설정을 확인하세요.`);
+    }
+    
+    if (!isValidTronAddress(toToken, tronweb)) {
+      console.error(`❌ 유효하지 않은 toToken 주소:`, toToken);
+      throw new Error(`${toCoin}의 contract address가 유효하지 않습니다. (${toToken}) DB 설정을 확인하세요.`);
+    }
+    
+    if (!isValidTronAddress(routerAddress, tronweb)) {
+      console.error(`❌ 유효하지 않은 routerAddress 주소:`, routerAddress);
+      throw new Error(`JustSwap Router 주소가 유효하지 않습니다. (${routerAddress})`);
+    }
+    
+    if (!isValidTronAddress(walletData.address, tronweb)) {
+      console.error(`❌ 유효하지 않은 userAddress 주소:`, walletData.address);
+      throw new Error(`사용자 지갑 주소가 유효하지 않습니다. (${walletData.address})`);
+    }
+    
+    console.log('✅ 모든 주소 유효성 검사 통과');
+
+    // 4. 스왑 전 계정 활성화 확인
+    console.log('🔍 계정 활성화 상태 확인 중...');
+    try {
+      const account = await tronweb.trx.getAccount(walletData.address);
+      
+      if (!account || !account.address) {
+        console.error('❌ 계정이 활성화되지 않았습니다');
+        throw new Error(
+          `❌ 계정 미활성화: ${walletData.address}\n` +
+          `해결책: 먼저 이 주소로 최소 1 TRX를 수신해서 계정을 활성화하세요.`
+        );
+      }
+      
+      const trxBalance = await tronweb.trx.getBalance(walletData.address);
+      const trxBalanceInTRX = tronweb.fromSun(trxBalance);
+      
+      if (trxBalance < 3000000) { // 3 TRX 이하
+        console.warn(`⚠️ TRX 잔액 부족: ${trxBalanceInTRX} TRX (최소 3 TRX 권장)`);
+        throw new Error(
+          `⚠️ TRX 잔액 부족 (${trxBalanceInTRX} TRX)\n` +
+          `스왑을 위해서는 최소 3 TRX 이상의 가스비가 필요합니다.`
+        );
+      }
+      
+      console.log(`✅ 계정 활성화 확인 완료 (TRX: ${trxBalanceInTRX})`);
+    } catch (accountError: any) {
+      console.error('❌ 계정 확인 실패:', accountError.message);
+      throw accountError;
+    }
+
+    // TronWeb.transactionBuilder.triggerSmartContract()는 Hex 형식을 요구하므로 변환
+    let fromTokenHex: string, toTokenHex: string, routerAddressHex: string, userAddressHex: string;
+    
+    try {
+      fromTokenHex = tronweb.address.toHex(fromToken);
+      console.log('✅ fromToken Hex 변환:', fromTokenHex);
+    } catch (e: any) {
+      console.error('❌ fromToken Hex 변환 실패:', { token: fromToken, error: e.message });
+      throw new Error(`fromToken Hex 변환 실패: ${e.message}`);
+    }
+
+    try {
+      toTokenHex = tronweb.address.toHex(toToken);
+      console.log('✅ toToken Hex 변환:', toTokenHex);
+    } catch (e: any) {
+      console.error('❌ toToken Hex 변환 실패:', { token: toToken, error: e.message });
+      throw new Error(`toToken Hex 변환 실패: ${e.message}`);
+    }
+
+    try {
+      routerAddressHex = tronweb.address.toHex(routerAddress);
+      console.log('✅ routerAddress Hex 변환:', routerAddressHex);
+    } catch (e: any) {
+      console.error('❌ routerAddress Hex 변환 실패:', { address: routerAddress, error: e.message });
+      throw new Error(`routerAddress Hex 변환 실패: ${e.message}`);
+    }
+
+    try {
+      userAddressHex = tronweb.address.toHex(walletData.address);
+      console.log('✅ userAddress Hex 변환:', userAddressHex);
+    } catch (e: any) {
+      console.error('❌ userAddress Hex 변환 실패:', { address: walletData.address, error: e.message });
+      throw new Error(`userAddress Hex 변환 실패: ${e.message}`);
+    }
+
+    // 주소 검증 및 로깅
+    console.log('📋 스왑 파라미터 (Hex 변환 완료):', {
+      router: routerAddressHex,
+      fromToken: fromTokenHex,
+      toToken: toTokenHex,
+      fromAmount: Math.floor(Number(fromAmount)),
+      amountOutMin,
+      userAddress: userAddressHex,
+      userAddressBase58: walletData.address,
+      timestamp: Math.floor(Date.now() / 1000)
+    });
+
+    // 4-1. fromToken 승인 (Approve)
+    console.log('🔐 fromToken 승인 중...');
+    try {
+      const tokenContract = await tronweb.contract().at(fromTokenHex);
+      const approveAmount = '999999999999999999999999999'; // 무제한 승인
+      
+      const approveTx = await Promise.race([
+        tokenContract.approve(routerAddressHex, approveAmount).send({
+          feeLimit: 100000000
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Approve 타임아웃')), 30000)
+        )
+      ]) as any;
+      
+      console.log('✅ fromToken 승인 완료:', approveTx);
+    } catch (approveError: any) {
+      console.error('⚠️ Approve 호출 중 에러 (계속 진행):', approveError.message);
+    }
+
+    // 4-2. JustSwap 스왑 호출
+    let transaction: any;
+    try {
+      transaction = await Promise.race([
+        tronweb.transactionBuilder.triggerSmartContract(
+          routerAddressHex,
+          'swapExactTokensForTokens(uint256,uint256,address[],address,uint256)',
+          { feeLimit: 100000000 },
+          [
+            { type: 'uint256', value: Math.floor(Number(fromAmount)) },
+            { type: 'uint256', value: Math.floor(amountOutMin) },
+            { type: 'address[]', value: [fromTokenHex, toTokenHex] },
+            { type: 'address', value: userAddressHex },
+            { type: 'uint256', value: Math.floor(Date.now() / 1000) + 300 }
+          ]
+        ),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('JustSwap 타임아웃 (30초)')), 30000)
+        )
+      ]) as any;
+    } catch (swapError: any) {
+      console.error('❌ JustSwap 호출 실패:', {
+        message: swapError.message,
+        router: routerAddressHex,
+        fromToken: fromTokenHex,
+        toToken: toTokenHex
+      });
+      throw swapError;
+    }
+
+    if (!transaction?.result?.result) {
+      const errorMsg = transaction?.result?.message || transaction?.result || 'Unknown error';
+      console.error('❌ 트랜잭션 검증 실패:', {
+        result: transaction?.result,
+        transaction: transaction?.transaction ? 'present' : 'missing'
+      });
+      throw new Error(`트랜잭션 검증 실패: ${errorMsg}`);
+    }
+
+    // 4. 서명 및 브로드캐스트
+    console.log('✍️ 트랜잭션 서명 중...');
+    const signedTransaction = await Promise.race([
+      tronweb.trx.sign(transaction.transaction),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('서명 타임아웃')), 10000)
+      )
+    ]) as any;
+
+    console.log('📡 네트워크 브로드캐스트 중...');
+    const broadcastResult = await Promise.race([
+      tronweb.trx.sendRawTransaction(signedTransaction),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('브로드캐스트 타임아웃')), 15000)
+      )
+    ]) as any;
+
+    if (!broadcastResult?.result) {
+      throw new Error(`브로드캐스트 실패: ${broadcastResult?.message || 'Unknown error'}`);
+    }
+
+    const txHash = broadcastResult.txid || broadcastResult.transaction?.txID;
+
+    // 5. DB 업데이트 (성공)
+    console.log(`✅ 스왑 완료: ${txHash}`);
+    const { error: updateError } = await supabase
+      .from('coin_swaps')
+      .update({
+        status: 'completed',
+        tx_hash: txHash,
+        updated_at: new Date().toISOString()
+      })
+      .eq('swap_id', swapId);
+
+    if (updateError) {
+      console.error('⚠️ DB 업데이트 실패:', updateError);
+    }
+
+  } catch (error: any) {
+    console.error(`❌ [비동기] 스왑 실패 (${swapId}):`, error.message);
+
+    // DB 업데이트 (실패)
+    try {
+      await supabase
+        .from('coin_swaps')
+        .update({
+          status: 'failed',
+          tx_hash: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('swap_id', swapId);
+    } catch (dbError) {
+      console.error('⚠️ DB 업데이트 실패:', dbError);
+    }
+  }
+}
+
+// ===== Wallet Encryption =====
+const WALLET_ENCRYPTION_KEY = Deno.env.get('WALLET_ENCRYPTION_KEY') ?? 'default-encryption-key-please-change-in-production';
+
+/**
+ * AES-GCM 복호화 (wallet.tsx와 동일한 로직)
+ */
+async function decryptPrivateKey(encryptedData: string): Promise<string> {
+  try {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    
+    const { iv, data } = JSON.parse(encryptedData);
+    
+    // 256-bit key 생성 (암호화할 때와 동일)
+    const keyMaterial = await crypto.subtle.digest(
+      'SHA-256',
+      encoder.encode(WALLET_ENCRYPTION_KEY)
+    );
+    
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyMaterial,
+      'AES-GCM',
+      false,
+      ['decrypt']
+    );
+    
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: new Uint8Array(iv) },
+      key,
+      new Uint8Array(data)
+    );
+    
+    return decoder.decode(decrypted);
+  } catch (error) {
+    console.error('Decryption error:', error);
+    throw new Error('Private key 복호화 실패');
+  }
+}
 
 // ===== Biconomy Supertransaction API =====
 
@@ -103,6 +700,16 @@ transactionRouter.post('/send', async (c) => {
       }, 404);
     }
 
+    console.log('📊 지갑 조회 결과:', {
+      wallet_id: walletData.wallet_id,
+      address: walletData.address,
+      address_length: walletData.address?.length,
+      address_starts_with: walletData.address?.substring(0, 5),
+      coin_type: walletData.coin_type,
+      balance: walletData.balance,
+      wallet_type: walletData.wallet_type
+    });
+
     const actualWalletId = walletData.wallet_id;
 
     // Cold Wallet 출금 차단
@@ -123,39 +730,58 @@ transactionRouter.post('/send', async (c) => {
     }
 
     // 3. 코인 정보 조회
+    console.log(`🔍 코인 정보 조회 중: ${coinType}`);
     const { data: coinData, error: coinError } = await supabase
       .from('supported_tokens')
-      .select('chain_id, contract_address, rpc_url')
+      .select('chain_id, contract_address, rpc_url, network')
       .eq('symbol', coinType)
       .single();
 
-    if (coinError || !coinData) {
+    if (coinError) {
+      console.error(`❌ 코인 조회 에러: ${coinType}`, coinError);
       return c.json({ 
         success: false, 
-        error: '지원하지 않는 코인입니다' 
+        error: `코인 정보 조회 실패: ${coinError.message}` 
       }, 404);
     }
 
-    // 4. Private Key 복호화
-    console.log('🔓 Private Key 복호화 중...');
-    const decryptResponse = await fetch(
-      `${Deno.env.get('SUPABASE_URL')}/functions/v1/make-server-b6d5667f/wallet/decrypt-key`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`
-        },
-        body: JSON.stringify({ wallet_id: actualWalletId })
-      }
-    );
-
-    const decryptResult = await decryptResponse.json();
-    if (!decryptResult.success) {
-      throw new Error('Private Key 복호화 실패');
+    if (!coinData) {
+      console.error(`❌ 지원하지 않는 코인: ${coinType}`);
+      return c.json({ 
+        success: false, 
+        error: `지원하지 않는 코인입니다: ${coinType}` 
+      }, 404);
     }
 
-    const privateKey = decryptResult.privateKey;
+    console.log(`✅ 코인 정보 조회 완료:`, {
+      symbol: coinType,
+      network: coinData.network,
+      chain_id: coinData.chain_id,
+      has_contract: !!coinData.contract_address,
+      has_rpc: !!coinData.rpc_url
+    });
+
+    // 4. Private Key 복호화 (직접 복호화)
+    console.log('🔓 Private Key 복호화 중...', { walletId: actualWalletId });
+    
+    if (!walletData.encrypted_private_key) {
+      throw new Error('Private Key가 저장되지 않았습니다');
+    }
+
+    console.log('✅ encrypted_private_key 조회 완료');
+
+    // 직접 복호화 (같은 WALLET_ENCRYPTION_KEY로 복호화)
+    let privateKey: string;
+    try {
+      privateKey = await decryptPrivateKey(walletData.encrypted_private_key);
+      console.log('✅ Private Key 복호화 완료');
+    } catch (error: any) {
+      console.error('❌ Private Key 복호화 실패:', {
+        message: error.message,
+        name: error.name
+      });
+      throw new Error(`Private Key 복호화 실패: ${error.message}`);
+    }
 
     // 5. 네트워크 타입별 전송 로직 분기
     const chainId = coinData.chain_id;
@@ -164,7 +790,49 @@ transactionRouter.post('/send', async (c) => {
 
     if (isTronNetwork(coinData.rpc_url)) {
       // ===== Tron (TRC-20) 전송 =====
-      console.log('🌐 Tron 네트워크 전송 시작...');
+      console.log('🌐 Tron 네트워크 전송 시작...', {
+        from: walletData.address,
+        to: toAddress,
+        amount: amount,
+        contract: coinData.contract_address,
+        rpc: coinData.rpc_url?.substring(0, 30) + '...'
+      });
+
+      // ⚠️ TRON TRC-20 전송 전 TRX 가스비 확인
+      if (coinType !== 'TRX') {
+        console.log('💰 TRX 잔액 확인 중 (가스비 check)...');
+        try {
+          let tronWeb: any;
+          try {
+            const TronWebModule = await import('npm:tronweb@6');
+            const TronWebClass = TronWebModule.TronWeb || TronWebModule.default || TronWebModule;
+            tronWeb = new TronWebClass({ fullHost: coinData.rpc_url });
+          } catch {
+            const TronWebModule = await import('npm:tronweb@5.4.0');
+            const TronWebClass = TronWebModule.default || TronWebModule;
+            tronWeb = new TronWebClass({ fullHost: coinData.rpc_url });
+          }
+          
+          const trxBalance = await tronWeb.trx.getBalance(walletData.address);
+          const trxBalanceInTRX = tronWeb.fromSun(trxBalance);
+          
+          console.log('📊 TRX 잔액:', {
+            sun: trxBalance,
+            trx: trxBalanceInTRX
+          });
+
+          // 가스비 부족 체크 (대략 1 TRX = 최대 100 TRX 수수료 필요)
+          // 안전하게 최소 1 TRX 필요
+          if (trxBalance < 1000000) { // 1 TRX = 1,000,000 Sun
+            throw new Error(`⚠️ TRX 잔액 부족: ${trxBalanceInTRX} TRX\n최소 1 TRX 이상의 가스비가 필요합니다. 주소에 TRX를 충전해주세요.`);
+          }
+        } catch (error: any) {
+          if (error.message.includes('⚠️')) {
+            throw error; // 이미 파싱된 에러는 그대로 throw
+          }
+          console.warn('⚠️ TRX 잔액 확인 실패 (계속 진행):', error.message);
+        }
+      }
       
       const tronResult = await sendTronTransaction({
         privateKey,
@@ -281,10 +949,15 @@ transactionRouter.post('/send', async (c) => {
       quote
     });
   } catch (error: any) {
-    console.error('❌ 출금 실패:', error);
+    console.error('❌ 출금 실패:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
     return c.json({
       success: false,
-      error: error.message || '출금에 실패했습니다'
+      error: error.message || '출금에 실패했습니다',
+      details: error.name
     }, 500);
   }
 });
@@ -292,8 +965,10 @@ transactionRouter.post('/send', async (c) => {
 /**
  * GET /transaction/receipt/:txHash
  * Transaction Receipt 조회
- */
-transactionRouter.get('/receipt/:txHash', async (c) => {
+ *//**
+ * GET /receipt/:txHash
+ * Transaction Receipt 조회
+ */transactionRouter.get('/receipt/:txHash', async (c) => {
   try {
     const txHash = c.req.param('txHash');
     const chainId = c.req.query('chainId') || '8453'; // 기본: Base
@@ -559,6 +1234,54 @@ transactionRouter.post('/move-to-hot', async (c) => {
 // ===== 헬퍼 함수 =====
 
 /**
+ * TRON 주소 유효성 검사 (체크섬 포함)
+ * @param address - TRON address (Base58 format)
+ * @param tronweb - TronWeb instance for validation
+ * @returns true if valid, false otherwise
+ */
+function isValidTronAddress(address: string | null, tronweb?: any): boolean {
+  if (!address || typeof address !== 'string') {
+    console.error('❌ 주소 null/type 검사 실패:', { address, type: typeof address });
+    return false;
+  }
+  
+  // 1. 기본 형식 검사 (길이와 시작 문자)
+  const basicValid = address.length === 34 && address.startsWith('T');
+  
+  if (!basicValid) {
+    console.error(`❌ 주소 기본 형식 검사 실패:`, { 
+      address, 
+      length: address.length, 
+      startsWith_T: address.startsWith('T'),
+      expected: '34 chars starting with T'
+    });
+    return false;
+  }
+  
+  // 2. TronWeb instance가 있으면 체크섬 검증 (더 정확한 검증)
+  if (tronweb) {
+    try {
+      // TronWeb의 toHex() 메서드는 유효하지 않은 주소면 에러 발생
+      // 미리 체크하기 위해 isAddress() 사용
+      const isValidAddress = tronweb.isAddress(address);
+      if (!isValidAddress) {
+        console.error(`❌ TRON 체크섬 검증 실패:`, { address });
+        return false;
+      }
+      console.log(`✅ TRON 체크섬 검증 통과:`, { address, length: address.length });
+      return true;
+    } catch (e: any) {
+      console.error(`❌ TRON 체크섬 검증 에러:`, { address, error: e.message });
+      return false;
+    }
+  }
+  
+  // 3. TronWeb instance 없으면 기본 형식만 검증
+  console.log(`✅ 주소 기본 형식 검사 통과:`, { address, length: address.length });
+  return true;
+}
+
+/**
  * Transaction Receipt 조회
  * RPC를 통해 블록체인에서 직접 조회
  */
@@ -681,33 +1404,94 @@ async function sendTronTransaction({
   rpcUrl: string;
 }): Promise<{ txHash: string }> {
   try {
-    // TronWeb은 npm 패키지이므로 동적 import 사용
-    const { TronWeb } = await import('npm:tronweb@6.0.0');
-    
-    const tronWeb = new TronWeb({
-      fullHost: rpcUrl,
-      privateKey: privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey
+    console.log('🔌 TronWeb 초기화 중...', { 
+      from: fromAddress.substring(0, 10),
+      to: toAddress.substring(0, 10),
+      amount,
+      contract: contractAddress?.substring(0, 15),
+      rpc: rpcUrl?.substring(0, 30)
     });
 
+    // TronWeb은 npm 패키지이므로 동적 import 사용
+    const keyToUse = privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey;
+    console.log('🔑 Private Key 포맷:', { 
+      original_length: privateKey.length,
+      final_length: keyToUse.length,
+      starts_with_0x: privateKey.startsWith('0x')
+    });
+
+    const TronWebImp = await import('npm:tronweb@6').catch(() => import('npm:tronweb@5.4.0'));
+    const TronWebClass = TronWebImp.default || TronWebImp;
+    const tronWeb = new TronWebClass({ fullHost: rpcUrl, privateKey: keyToUse });
+    console.log('✅ TronWeb 초기화 완료');
+
     // TRC-20 전송
+    console.log('📋 컨트랙트 로드 중...');
     const contract = await tronWeb.contract().at(contractAddress);
+    console.log('✅ 컨트랙트 로드 완료');
     
     // amount를 Sun 단위로 변환 (1 TRX = 10^6 Sun)
     const amountInSun = tronWeb.toSun(amount);
+    console.log('💰 금액 변환:', { 
+      original: amount,
+      inSun: amountInSun.toString()
+    });
     
-    const transaction = await contract.transfer(
+    console.log('📤 transfer 호출 중...', { 
+      to: toAddress,
+      amount: amountInSun.toString()
+    });
+    
+    const transactionResult = await contract.transfer(
       toAddress, // Tron 주소는 Base58 형식 그대로 사용
       amountInSun
     ).send({
       feeLimit: 100000000 // 100 TRX
     });
 
+    console.log('✅ 트랜잭션 전송 결과:', {
+      type: typeof transactionResult,
+      is_string: typeof transactionResult === 'string',
+      value: typeof transactionResult === 'string' ? transactionResult : Object.keys(transactionResult || {})
+    });
+
+    // transactionResult가 문자열(txHash)이거나 객체(receipt)일 수 있음
+    const txHash = typeof transactionResult === 'string' ? transactionResult : transactionResult?.txID || transactionResult?.transactionHash || transactionResult?.hash;
+    
+    if (!txHash) {
+      console.error('❌ txHash 추출 실패:', transactionResult);
+      throw new Error('txHash를 추출할 수 없습니다');
+    }
+
+    console.log('✅ txHash 추출 완료:', txHash.substring(0, 20) + '...');
+
     return {
-      txHash: transaction
+      txHash
     };
   } catch (error: any) {
-    console.error('❌ Tron 트랜잭션 전송 실패:', error);
-    throw new Error(`Tron 전송 실패: ${error.message || '알 수 없는 오류'}`);
+    const errorMessage = error.message || '알 수 없는 오류';
+    
+    console.error('❌ Tron 트랜잭션 전송 실패:', {
+      message: errorMessage,
+      name: error.name,
+      stack: error.stack?.split('\n').slice(0, 5)
+    });
+
+    // TRON 에러 메시지 파싱 및 변환
+    let userFriendlyError = errorMessage;
+
+    if (errorMessage.includes('account') && errorMessage.includes('does not exist')) {
+      userFriendlyError = `⚠️ TRON 계정 활성화 필요: 최소 420 Sun (≈0.00042 TRX)의 TRX 잔액이 필요합니다. 현재 TRX 잔액을 확인해주세요.`;
+    } else if (errorMessage.includes('insufficient balance')) {
+      userFriendlyError = '❌ TRX 잔액 부족: 트랜잭션 수수료를 충당할 수 없습니다.';
+    } else if (errorMessage.includes('energy insufficient')) {
+      userFriendlyError = '❌ 에너지 부족: TRON 네트워크 트랜잭션 에너지가 부족합니다.';
+    } else if (errorMessage.includes('permission') || errorMessage.includes('witness')) {
+      userFriendlyError = '❌ 권한 오류: 이 계정으로는 거래할 수 없습니다.';
+    }
+
+    console.error('🔄 사용자 친화적 에러:', userFriendlyError);
+    throw new Error(userFriendlyError);
   }
 }
 
@@ -723,11 +1507,16 @@ async function getTronTransactionReceipt(
 ): Promise<TransactionReceipt> {
   try {
     // TronWeb은 npm 패키지이므로 동적 import 사용
-    const { TronWeb } = await import('npm:tronweb@6.0.0');
-    
-    const tronWeb = new TronWeb({
-      fullHost: rpcUrl
-    });
+    let tronWeb: any;
+    try {
+      const TronWebModule = await import('npm:tronweb@6');
+      const TronWebClass = TronWebModule.TronWeb || TronWebModule.default || TronWebModule;
+      tronWeb = new TronWebClass({ fullHost: rpcUrl });
+    } catch {
+      const TronWebModule = await import('npm:tronweb@5.4.0');
+      const TronWebClass = TronWebModule.default || TronWebModule;
+      tronWeb = new TronWebClass({ fullHost: rpcUrl });
+    }
 
     // 트랜잭션 조회
     const transaction = await tronWeb.trx.getTransactionInfo(txHash);
@@ -762,5 +1551,11 @@ async function getTronTransactionReceipt(
     };
   }
 }
+
+/**
+ * POST /transaction/swap/tron
+ * TRON JustSwap 스왑 실행 (위의 endpoint 라우팅으로 처리됨)
+ */
+// 제거됨 - handleSwapTron 함수로 통합됨
 
 export default transactionRouter;

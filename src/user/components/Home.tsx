@@ -53,6 +53,12 @@ export function Home({ wallets, transactions, onNavigate, onSelectCoin }: HomePr
     const checkVerification = async () => {
       if (!user?.id) return;
 
+      // 관리자 계정(master, center, agency, store, admin)은 자동으로 인증 완료
+      if (['master', 'center', 'agency', 'store', 'admin'].includes(user.role)) {
+        setAccountVerified(true);
+        return;
+      }
+
       try {
         // account_verifications 테이블에서 최신 인증 정보 확인
         const { data, error } = await supabase

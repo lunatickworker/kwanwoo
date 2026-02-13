@@ -84,6 +84,23 @@ export function AccountVerification({ onNavigate }: AccountVerificationProps) {
   const fetchVerificationStatus = async () => {
     if (!user) return;
 
+    // 관리자 계정(master, center, agency, store, admin)은 자동으로 인증 완료 상태로 설정
+    if (['master', 'center', 'agency', 'store', 'admin'].includes(user.role)) {
+      setVerificationStatus({
+        verification_id: '',
+        user_id: user.id,
+        bank_name: '-',
+        account_number: '-',
+        account_holder: '-',
+        status: 'verified',
+        smart_account_address: '-',
+        created_at: new Date().toISOString(),
+        verified_at: new Date().toISOString(),
+      });
+      setIsLoading(false);
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from('account_verifications')

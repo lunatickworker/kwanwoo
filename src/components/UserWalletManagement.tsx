@@ -767,20 +767,44 @@ export function UserWalletManagement() {
     if (!confirmed) return;
 
     try {
-      const { error } = await supabase
+      console.log('🗑️ 지갑 삭제 시작:', {
+        wallet_id: wallet.wallet_id,
+        user_id: selectedUser.user_id,
+        coin_type: wallet.coin_type,
+        address: wallet.address
+      });
+
+      // wallet_id만으로 DELETE 실행
+      const { data, error, count } = await supabase
         .from('wallets')
         .delete()
         .eq('wallet_id', wallet.wallet_id)
-        .eq('user_id', selectedUser.user_id);
+        .select();
 
-      if (error) throw error;
+      console.log('📊 DELETE 쿼리 결과:', { 
+        rowCount: data?.length || 0,
+        error, 
+        deletedData: data 
+      });
 
+      if (error) {
+        console.error('❌ DELETE 쿼리 에러:', error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        console.warn('⚠️ 삭제된 행 없음. wallet_id 확인:', wallet.wallet_id);
+        toast.error('해당 지갑을 찾을 수 없습니다. 새로고침 후 다시 시도해주세요.');
+        return;
+      }
+
+      console.log('✅ 지갑 삭제 완료:', data[0]);
       toast.success(`${wallet.coin_type} 지갑이 삭제되었습니다`);
       
       // 지갑 목록 새로고침
       await fetchUserWallets(selectedUser.user_id);
     } catch (error: any) {
-      console.error('Delete wallet error:', error);
+      console.error('❌ Delete wallet error:', error);
       toast.error(error.message || '지갑 삭제에 실패했습니다');
     }
   };

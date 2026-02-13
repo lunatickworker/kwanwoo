@@ -126,7 +126,7 @@ function AppContent() {
     if (hash.startsWith("admin")) {
       if (
         user &&
-        ["center", "agency", "store", "admin"].includes(
+        ["center", "agency", "store"].includes(
           user.role,
         )
       ) {
@@ -146,24 +146,9 @@ function AppContent() {
       return;
     }
 
-    // Master
-    if (user.role === "master") {
-      window.location.hash = "#master";
-      setCurrentRoute("master");
-      return;
-    }
-
-    // 센터/에이전시/가맹점/admin
-    if (
-      ["center", "agency", "store", "admin"].includes(user.role)
-    ) {
-      window.location.hash = "#admin";
-      setCurrentRoute("admin");
-      return;
-    }
-
-    // 일반 회원
-    if (user.role === "user") {
+    // hash가 없을 때 (사용자 페이지)
+    // 모든 계정이 사용자 페이지에 머물러야 함 (관리자도 사용자 페이지에서 지갑 사용 가능)
+    if (["user", "admin", "center", "agency", "store", "master"].includes(user.role)) {
       setCurrentRoute("user");
       return;
     }
@@ -197,7 +182,7 @@ function AppContent() {
       else if (hash.startsWith("admin")) {
         if (
           user &&
-          ["center", "agency", "store", "admin"].includes(
+          ["center", "agency", "store"].includes(
             user.role,
           )
         ) {
@@ -206,11 +191,16 @@ function AppContent() {
           setCurrentRoute("admin-login");
         }
       }
-      // 기본
+      // 기본 (hash 없을 때)
       else {
-        if (user?.role === "user" || !user) {
+        if (!user) {
           setCurrentRoute("user");
+          return;
         }
+
+        // hash가 없으면 (사용자 페이지) 모든 계정이 사용자 페이지에 머물러야 함
+        // 관리자도 사용자 페이지에서 지갑 사용 가능
+        setCurrentRoute("user");
       }
     };
 
@@ -251,11 +241,11 @@ function AppContent() {
     return <MobileLogin initialShowSignUp={true} />;
   }
 
-  // Admin 페이지 (center, agency, store, admin 역할)
+  // Admin 페이지 (center, agency, store 역할)
   if (currentRoute === "admin") {
     if (
       !user ||
-      !["admin", "agency", "center", "store"].includes(
+      !["agency", "center", "store"].includes(
         user.role,
       )
     ) {

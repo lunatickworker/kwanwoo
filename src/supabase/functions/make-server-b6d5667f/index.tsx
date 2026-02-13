@@ -686,15 +686,36 @@ app.use('*', logger(console.log));
 app.use(
   "/*",
   cors({
-    origin: "*",
-    allowHeaders: ["Content-Type", "Authorization", "X-User-Email", "X-User-Role", "X-User-Id"],
+    origin: ['http://localhost:3001', 'http://localhost:5173', 'https://kwanwoo-coin.vercel.app'],
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "apikey",
+      "X-User-Email",
+      "X-User-Role",
+      "X-User-Id",
+      "x-client-info",
+      "x-supabase-auth",
+      "x-supabase-client-version"
+    ],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: true,
     exposeHeaders: ["Content-Length"],
     maxAge: 600,
   }),
 );
 
 // Health check endpoints (인증 불필요) - 먼저 정의
+app.get("/make-server-b6d5667f", (c) => {
+  return c.json({ 
+    status: "ok",
+    message: "TRON Swap Edge Function Ready",
+    timestamp: new Date().toISOString(),
+    service: "make-server-b6d5667f",
+    version: "1.0.0"
+  });
+});
+
 app.get("/health", (c) => {
   return c.json({ 
     status: "ok",
@@ -1185,19 +1206,20 @@ app.put("/make-server-b6d5667f/api/admin/users/:id/level", async (c) => {
 app.route("/make-server-b6d5667f/wallet", walletRouter);
 
 // =====================================================
-// 트랜잭션 전송 및 관리 API
-// =====================================================
-app.route("/make-server-b6d5667f/transaction", transactionRouter);
-
-// =====================================================
 // 거래 수수료 및 내역 조회 API
 // =====================================================
-app.route("/make-server-b6d5667f/transaction-fee", transactionFeeRouter);
+app.route("/make-server-b6d5667f/fee", transactionFeeRouter);
 
 // =====================================================
 // 스테이킹 관리 API
 // =====================================================
 app.route("/make-server-b6d5667f/staking", stakingRouter);
+
+// =====================================================
+// 트랜잭션 전송 및 관리 API  
+// POST /make-server-b6d5667f → transactionRouter.post('/') → handleSwapTron()
+// =====================================================
+app.route("/make-server-b6d5667f", transactionRouter);  // 👈 전체 경로로 마운트
 
 // =====================================================
 // Deposit 웹훅 API (외부 서비스에서 블록체인 TX 감지 시 호출)
@@ -1652,4 +1674,5 @@ app.post("/make-server-b6d5667f/api/account-verification/request", async (c) => 
   }
 });
 
+// ===== Deno Entry Point =====
 Deno.serve(app.fetch);

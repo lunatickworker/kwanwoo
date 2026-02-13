@@ -21,12 +21,19 @@ export function Login({ onLoginSuccess }: LoginProps) {
       const user = await login(email, password, true);
       // toast.success('로그인 성공');
       
+      console.log('🔐 관리자 로그인 완료:', { role: user.role, email: user.email });
+      
+      // 관리자 로그인 페이지에서는 관리자만 로그인 가능
+      // 역할에 따라 올바른 관리자 페이지로 리다이렉트
       if (user.role === 'master') {
+        console.log('➡️ Master 대시보드로 이동');
         window.location.hash = '#master';
-      } else if (['center', 'agency', 'store', 'admin'].includes(user.role)) {
+      } else if (['center', 'agency', 'store'].includes(user.role)) {
+        console.log('➡️ 관리자 대시보드로 이동');
         window.location.hash = '#admin';
       } else {
-        window.location.hash = '';
+        // 일반 사용자는 관리자 페이지 로그인 불가
+        throw new Error('관리자 권한이 필요합니다');
       }
       
       onLoginSuccess?.();

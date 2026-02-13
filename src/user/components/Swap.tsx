@@ -1,24 +1,16 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, ArrowDownUp, Info, Zap, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
+import { ArrowLeft, ArrowDownUp, Info, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import { Screen, WalletData, CoinType } from '../App';
 import { toast } from 'sonner';
 import { supabase } from '../../utils/supabase/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { useWallet } from '../../hooks/useWallet';
-import { biconomyClient } from '../../utils/biconomy/client';
-import { ethers } from 'ethers';
+import { executeTronSwap, checkTransactionStatus } from '../../utils/tronSwap';
 
 interface SwapProps {
   wallets: WalletData[];
   selectedCoin: CoinType | '';
   onNavigate: (screen: Screen) => void;
   onSelectCoin: (coin: CoinType) => void;
-}
-
-interface GasQuote {
-  gasCost: string;
-  estimatedTime: string;
-  route: string;
 }
 
 interface SwapRecord {
@@ -28,24 +20,16 @@ interface SwapRecord {
   from_amount: number;
   to_amount: number;
   status: string;
-  method?: string;
-  gas_cost?: string;
   created_at: string;
 }
 
 export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapProps) {
   const { user } = useAuth();
-  const { signer, address, isConnected } = useWallet();
   const [fromCoin, setFromCoin] = useState<CoinType>('BTC');
   const [toCoin, setToCoin] = useState<CoinType>('ETH');
   const [fromAmount, setFromAmount] = useState('');
   const [isSwapping, setIsSwapping] = useState(false);
-  const [enableSupertransaction, setEnableSupertransaction] = useState(true);
-  const [gasToken, setGasToken] = useState('USDT');
-  const [gasQuote, setGasQuote] = useState<GasQuote | null>(null);
-  const [isCalculatingGas, setIsCalculatingGas] = useState(false);
   const [recentSwaps, setRecentSwaps] = useState<SwapRecord[]>([]);
-  const [currentStep, setCurrentStep] = useState<'idle' | 'composing' | 'signing' | 'executing' | 'completed'>('idle');
   const [coins, setCoins] = useState<CoinType[]>([]);
 
   // 지갑이 있는 코인만 표시
@@ -170,31 +154,6 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
   const toAmount = calculateToAmount(fromAmount);
   const fee = fromAmount ? (parseFloat(toAmount) * 0.001).toFixed(8) : '0';
 
-  // 가스비 견적 계산
-  useEffect(() => {
-    const calculateGas = async () => {
-      if (!fromAmount || parseFloat(fromAmount) <= 0 || !enableSupertransaction) {
-        setGasQuote(null);
-        return;
-      }
-
-      setIsCalculatingGas(true);
-
-      // 시뮬레이션 - 실제로는 Biconomy Supertransaction API 호출
-      setTimeout(() => {
-        setGasQuote({
-          gasCost: (Math.random() * 3 + 0.3).toFixed(2) + ' ' + gasToken,
-          estimatedTime: '~' + (Math.floor(Math.random() * 15) + 5) + ' 초',
-          route: 'Uniswap V3 → Optimized Route'
-        });
-        setIsCalculatingGas(false);
-      }, 800);
-    };
-
-    const timer = setTimeout(calculateGas, 500);
-    return () => clearTimeout(timer);
-  }, [fromAmount, fromCoin, toCoin, enableSupertransaction, gasToken]);
-
   const handleSwap = async () => {
     if (!fromAmount || parseFloat(fromAmount) <= 0) {
       toast.error('교환할 금액을 입력하세요');
@@ -211,90 +170,53 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
       return;
     }
 
-    // Supertransaction 사용 시 지갑 연결 확인
-    if (enableSupertransaction && !isConnected) {
-      toast.error('먼저 MetaMask를 연결해주세요 (설정 > 지갑 연결)');
-      return;
-    }
-
     setIsSwapping(true);
-    setCurrentStep('idle');
+    let toastId: string | number | undefined;
     
     try {
-      let txHash = null;
+      toastId = toast.loading('🔄 스왑 요청을 보내는 중...');
 
-      // Supertransaction 사용 시
-      if (enableSupertransaction && isConnected && signer && address) {
-        try {
-          toast.info('⚡ 스마트 스왑 실행 중...');
+      // TRON 실제 스왑 실행 (비동기 처리)
+      const swapResult = await executeTronSwap({
+        userId: user?.id || '',
+        fromCoin,
+        toCoin,
+        fromAmount: parseFloat(fromAmount),
+        toAmount: parseFloat(toAmount),
+        exchangeRate: (exchangeRates[fromCoin] || 1) / (exchangeRates[toCoin] || 1),
+        fee: parseFloat(fee),
+        fromWalletAddress: fromWallet?.address || '',
+        toWalletAddress: toWallet?.address || ''
+      });
 
-          // Step 1: Compose
-          setCurrentStep('composing');
-          const composeResponse = await biconomyClient.swap({
-            from: address,
-            tokenIn: fromCoin,
-            tokenOut: toCoin,
-            amountIn: ethers.utils.parseUnits(fromAmount, 18).toString(),
-            chainId: 8453, // Base Mainnet
-            gasToken
-          });
-
-          console.log('가스비 견적:', composeResponse.quote);
-
-          // Step 2: Sign
-          setCurrentStep('signing');
-          const message = JSON.stringify(composeResponse.payload);
-          const signature = await signer.signMessage(message);
-
-          // Step 3: Execute
-          setCurrentStep('executing');
-          const executeResponse = await biconomyClient.execute(composeResponse.payload, signature);
-          
-          txHash = executeResponse.txHash;
-          setCurrentStep('completed');
-          toast.success('✅ 스마트 스왑 완료!');
-        } catch (superError: any) {
-          setCurrentStep('idle');
-          console.error('Supertransaction swap error:', superError);
-          toast.error(`스마트 스왑 실패: ${superError.message}`);
-        }
+      if (swapResult.status === 'processing') {
+        // 처리 중인 경우 폴링 중
+        toast.dismiss(toastId);
+        toastId = toast.loading('⏳ 블록체인에서 스왑을 처리 중입니다...\n(최대 60초 소요)');
       }
 
-      // Supabase에 스왑 기록 저장
-      const fromRate = exchangeRates[fromCoin] || 1;
-      const toRate = exchangeRates[toCoin] || 1;
-
-      const { error: dbError } = await supabase
-        .from('coin_swaps')
-        .insert({
-          user_id: user?.id,
-          from_coin: fromCoin,
-          to_coin: toCoin,
-          from_amount: parseFloat(fromAmount),
-          to_amount: parseFloat(toAmount),
-          exchange_rate: fromRate / toRate,
-          fee: parseFloat(fee),
-          fee_coin: toCoin,
-          status: txHash ? 'completed' : 'processing',
-          tx_hash: txHash,
-          method: enableSupertransaction ? 'supertransaction' : 'standard',
-          gas_token: enableSupertransaction ? gasToken : null,
-          gas_cost: gasQuote?.gasCost || null,
-        });
-
-      if (dbError) throw dbError;
-
-      if (!txHash) {
-        toast.success(`${fromAmount} ${fromCoin}를 ${toAmount} ${toCoin}로 교환 요청했습니다`);
+      if (swapResult.success && swapResult.txHash) {
+        toast.dismiss(toastId);
+        toast.success(`✅ 스왑 완료!\n해시: ${swapResult.txHash.substring(0, 16)}...`);
+        
+        // TronScan 링크 로그
+        console.log('🔗 TronScan:', `https://tronscan.org/#/transaction/${swapResult.txHash}`);
+        
+        setFromAmount('');
+        
+        // 최근 스왑 새로고침
+        fetchRecentSwaps();
+      } else {
+        toast.dismiss(toastId);
+        throw new Error(swapResult.error || '스왑 처리 실패');
       }
-      setFromAmount('');
       
     } catch (error) {
       console.error('Swap error:', error);
-      toast.error('코인 교환에 실패했습니다');
+      toast.dismiss(toastId);
+      toast.error('코인 교환에 실패했습니다: ' + (error instanceof Error ? error.message : ''));
     } finally {
       setIsSwapping(false);
-      setCurrentStep('idle');
     }
   };
 
@@ -335,58 +257,6 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
         <h2 className="text-white mb-2">코인 교환</h2>
         <p className="text-slate-400 text-sm">다른 코인으로 빠르게 교환하세요</p>
       </div>
-
-      {/* 스마트 스왑 옵션 */}
-      <div 
-        className="bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-xl p-4"
-        style={{ boxShadow: '0 0 20px rgba(6, 182, 212, 0.15)' }}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Zap className="w-5 h-5 text-cyan-400" />
-            <span className="text-white">스마트 스왑</span>
-          </div>
-          <button
-            onClick={() => setEnableSupertransaction(!enableSupertransaction)}
-            className={`w-12 h-6 rounded-full transition-all relative ${
-              enableSupertransaction ? 'bg-cyan-500' : 'bg-slate-600'
-            }`}
-          >
-            <div
-              className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${
-                enableSupertransaction ? 'left-6' : 'left-0.5'
-              }`}
-            />
-          </button>
-        </div>
-        <p className="text-slate-400 text-sm">
-          {enableSupertransaction 
-            ? '✅ 최적 DEX 자동 선택 | 최저 가격 | 빠른 실행' 
-            : '일반 스왑 방식'}
-        </p>
-      </div>
-
-      {/* 가스비 토큰 선택 */}
-      {enableSupertransaction && (
-        <div>
-          <label className="block text-slate-300 mb-2 text-sm">가스비 지불 토큰</label>
-          <div className="grid grid-cols-3 gap-2">
-            {['USDT', 'USDC', 'ETH'].map((token) => (
-              <button
-                key={token}
-                onClick={() => setGasToken(token)}
-                className={`py-2 px-4 rounded-lg border transition-all ${
-                  gasToken === token
-                    ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400'
-                    : 'bg-slate-800/50 border-slate-600 text-slate-400'
-                }`}
-              >
-                {token}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 스왑 입력 카드 */}
       <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 space-y-4">
@@ -465,67 +335,6 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
           </div>
         </div>
 
-        {/* 가스비 견적 */}
-        {gasQuote && enableSupertransaction && (
-          <div className="bg-gradient-to-r from-purple-500/10 to-cyan-500/10 border border-purple-500/30 rounded-lg p-4 space-y-2">
-            <div className="flex items-center gap-2 text-purple-400 mb-2">
-              <Info className="w-4 h-4" />
-              <span className="text-sm">스마트 스왑 견적</span>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-slate-400 text-xs">예상 가스비</div>
-                <div className="text-white">{gasQuote.gasCost}</div>
-              </div>
-              <div>
-                <div className="text-slate-400 text-xs">예상 시간</div>
-                <div className="text-cyan-400">{gasQuote.estimatedTime}</div>
-              </div>
-            </div>
-            <div className="text-slate-400 text-xs pt-1">
-              경로: {gasQuote.route}
-            </div>
-          </div>
-        )}
-
-        {/* 로딩 상태 */}
-        {isCalculatingGas && (
-          <div className="flex items-center gap-2 text-slate-400 text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span>견적 계산 중...</span>
-          </div>
-        )}
-
-        {/* 진행 상태 */}
-        {isSwapping && (
-          <div className="bg-slate-800/50 border border-cyan-500/30 rounded-lg p-4">
-            <div className="flex items-center gap-3 mb-3">
-              <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
-              <span className="text-white">스마트 스왑 진행 중...</span>
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className={`w-4 h-4 ${currentStep !== 'idle' ? 'text-green-400' : 'text-slate-600'}`} />
-                <span className={`text-sm ${currentStep !== 'idle' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  1. Compose
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className={`w-4 h-4 ${currentStep === 'signing' || currentStep === 'executing' || currentStep === 'completed' ? 'text-green-400' : 'text-slate-600'}`} />
-                <span className={`text-sm ${currentStep === 'signing' || currentStep === 'executing' || currentStep === 'completed' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  2. Sign
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className={`w-4 h-4 ${currentStep === 'executing' || currentStep === 'completed' ? 'text-green-400' : 'text-slate-600'}`} />
-                <span className={`text-sm ${currentStep === 'executing' || currentStep === 'completed' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  3. Execute
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Exchange Info */}
         {fromAmount && parseFloat(fromAmount) > 0 && (
           <div className="bg-slate-700/30 rounded-lg p-4 space-y-2">
@@ -561,10 +370,7 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
               <span>교환 중...</span>
             </>
           ) : (
-            <>
-              {enableSupertransaction && <Zap className="w-5 h-5" />}
-              <span>{enableSupertransaction ? '스마트 스왑' : '교환하기'}</span>
-            </>
+            <span>교환하기</span>
           )}
         </button>
       </div>
@@ -584,18 +390,10 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
                     <span className="text-white text-sm">
                       {swap.from_amount.toFixed(4)} {swap.from_coin} → {swap.to_amount.toFixed(4)} {swap.to_coin}
                     </span>
-                    {swap.method === 'supertransaction' && (
-                      <Zap className="w-3 h-3 text-cyan-400" />
-                    )}
                   </div>
                   <div className="text-slate-400 text-xs">
                     {new Date(swap.created_at).toLocaleString('ko-KR')}
                   </div>
-                  {swap.gas_cost && (
-                    <div className="text-slate-400 text-xs">
-                      가스비: {swap.gas_cost}
-                    </div>
-                  )}
                 </div>
                 <div>
                   {getStatusBadge(swap.status)}
@@ -611,9 +409,7 @@ export function Swap({ wallets, selectedCoin, onNavigate, onSelectCoin }: SwapPr
         <div className="flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-yellow-400 mt-0.5" />
           <p className="text-yellow-400 text-sm">
-            {enableSupertransaction 
-              ? '스마트 스왑이 자동으로 최적의 DEX를 선택하여 최저 가격으로 교환합니다.' 
-              : '코인 교환은 실시간 환율을 기반으로 처리되며, 시장 상황에 따라 최종 금액이 달라질 수 있습니다.'}
+            코인 교환은 실시간 환율을 기반으로 처리되며, 시장 상황에 따라 최종 금액이 달라질 수 있습니다.
           </p>
         </div>
       </div>

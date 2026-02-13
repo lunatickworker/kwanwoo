@@ -1,8 +1,27 @@
 // 지갑 생성 및 관리 API
 import { Hono } from "npm:hono";
+import { cors } from "npm:hono/cors";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const walletRouter = new Hono();
+
+// CORS 설정
+walletRouter.use(
+  '/*',
+  cors({
+    origin: '*',
+    allowHeaders: [
+      'Content-Type',
+      'Authorization',
+      'apikey',
+      'x-client-info',
+      'x-supabase-auth',
+      'x-supabase-client-version'
+    ],
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true
+  })
+);
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -540,10 +559,23 @@ walletRouter.post('/create-batch', async (c) => {
  */
 walletRouter.post('/decrypt-key', async (c) => {
   try {
+    // 요청 헤더 로깅
+    const authHeader = c.req.header('Authorization');
+    const apiKeyHeader = c.req.header('apikey');
+    console.log('🔐 decrypt-key 요청 헤더:', {
+      has_auth: !!authHeader,
+      has_apikey: !!apiKeyHeader,
+      auth_preview: authHeader ? authHeader.substring(0, 30) : 'none',
+      apikey_preview: apiKeyHeader ? apiKeyHeader.substring(0, 30) : 'none'
+    });
+
     const body = await c.req.json();
     const { wallet_id } = body;
 
+    console.log('🔐 decrypt-key 엔드포인트 진입:', { wallet_id });
+
     if (!wallet_id) {
+      console.error('❌ wallet_id 누락');
       return c.json({ 
         success: false, 
         error: 'wallet_id가 필요합니다' 
@@ -551,13 +583,21 @@ walletRouter.post('/decrypt-key', async (c) => {
     }
 
     // 1. 지갑 조회
+    console.log('🔍 지갑 조회 중:', { wallet_id });
     const { data: walletData, error } = await supabase
       .from('wallets')
       .select('encrypted_private_key, address, coin_type')
       .eq('wallet_id', wallet_id)
       .single();
 
+    console.log('📊 지갑 조회 결과:', {
+      found: !!walletData,
+      has_encrypted_key: !!walletData?.encrypted_private_key,
+      error: error?.message
+    });
+
     if (error || !walletData) {
+      console.error('❌ 지갱 조회 실패:', error?.message || '지갑 없음');
       return c.json({ 
         success: false, 
         error: '지갑을 찾을 수 없습니다' 
@@ -565,6 +605,7 @@ walletRouter.post('/decrypt-key', async (c) => {
     }
 
     if (!walletData.encrypted_private_key) {
+      console.error('❌ Private Key 없음');
       return c.json({ 
         success: false, 
         error: 'Private Key가 없습니다' 
@@ -572,7 +613,9 @@ walletRouter.post('/decrypt-key', async (c) => {
     }
 
     // 2. Private Key 복호화
+    console.log('🔓 Private Key 복호화 시작...');
     const privateKey = await decryptPrivateKey(walletData.encrypted_private_key);
+    console.log('✅ Private Key 복호화 완료');
 
     return c.json({
       success: true,
@@ -581,7 +624,11 @@ walletRouter.post('/decrypt-key', async (c) => {
       coin_type: walletData.coin_type
     });
   } catch (error: any) {
-    console.error('❌ Private Key 복호화 실패:', error);
+    console.error('❌ Private Key 복호화 실패:', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack?.split('\n').slice(0, 3)
+    });
     return c.json({
       success: false,
       error: error.message || 'Private Key 복호화에 실패했습니다'

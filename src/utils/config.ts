@@ -25,12 +25,29 @@ const getEnv = (key: string, defaultValue: string = ''): string => {
 // ============================================================
 export const SUPABASE_CONFIG = {
   url: getEnv('VITE_SUPABASE_URL', 'https://mzoeeqmtvlnyonicycvg.supabase.co'),
-  anonKey: getEnv('VITE_SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI'),
-  serviceRoleKey: getEnv('VITE_SUPABASE_SERVICE_ROLE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MjkyMjI3NywiZXhwIjoyMDc4NDk4Mjc3fQ.iuQCG3bhprNIIcFi3e94EQATHvIzVw50Wmp_cFFhSsU'),
+  anonKey: getEnv('SUPABASE_ANON_KEY', getEnv('VITE_SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5MjIyNzcsImV4cCI6MjA3ODQ5ODI3N30.oo7FsWjthtBtM-Xa1VFJieMGQ4mG__V8w7r9qGBPzaI')),
+  serviceRoleKey: getEnv('SUPABASE_SERVICE_ROLE_KEY', getEnv('VITE_SUPABASE_SERVICE_ROLE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16b2VlcW10dmxueW9uaWN5Y3ZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MjkyMjI3NywiZXhwIjoyMDc4NDk4Mjc3fQ.iuQCG3bhprNIIcFi3e94EQATHvIzVw50Wmp_cFFhSsU')),
+  dbUrl: getEnv('SUPABASE_DB_URL', ''),
   // Backend API URL
   backendUrl: getEnv('VITE_BACKEND_URL', 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1/make-server-b6d5667f'),
   // Edge Function Base URL (트랜잭션 API)
   FUNCTIONS_BASE_URL: getEnv('VITE_FUNCTIONS_BASE_URL', 'https://mzoeeqmtvlnyonicycvg.supabase.co/functions/v1'),
+};
+
+// ============================================================
+// Wallet & Encryption 설정
+// ============================================================
+export const WALLET_CONFIG = {
+  // Wallet Private Key Encryption Key (백엔드에서만 사용)
+  encryptionKey: getEnv('WALLET_ENCRYPTION_KEY', 'default-encryption-key-please-change-in-production'),
+};
+
+// ============================================================
+// Blockchain API 설정
+// ============================================================
+export const BLOCKCHAIN_CONFIG = {
+  // TRON API Key (Tron Grid API)
+  tronApiKey: getEnv('TRON_API_KEY', ''),
 };
 
 // ============================================================

@@ -304,13 +304,37 @@ export function AdminProfileCard({ onClose }: AdminProfileCardProps) {
       }
 
       // 지갑 상태를 'closed'로 변경 (소프트 삭제)
-      const { error } = await supabase
+      console.log('🔄 DELETE 쿼리 실행:', {
+        table: 'wallets',
+        wallet_id: walletId,
+        action: 'DELETE'
+      });
+
+      const { data, error, count } = await supabase
         .from('wallets')
-        .update({ status: 'closed' })
-        .eq('wallet_id', walletId);
+        .delete()
+        .eq('wallet_id', walletId)
+        .select();
 
-      if (error) throw error;
+      console.log('📊 DELETE 결과:', {
+        deletedRows: data?.length || 0,
+        error,
+        data: data
+      });
 
+      if (error) {
+        console.error('❌ DELETE 에러:', error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        console.warn('⚠️ 삭제된 지갑 없음. wallet_id:', walletId);
+        toast.error('해당 지갑을 찾을 수 없습니다.');
+        setDeletingWalletId(null);
+        return;
+      }
+
+      console.log('✅ 지갑 삭제 완료');
       toast.success('지갑이 삭제되었습니다');
       fetchWallets(); // 지갑 목록 새로고침
 

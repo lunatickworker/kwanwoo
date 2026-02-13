@@ -1,10 +1,27 @@
-import crypto from 'crypto';
+/**
+ * 환경변수에서 암호화 키 조회 (WALLET_ENCRYPTION_KEY 사용)
+ * 백엔드와 동일한 암호화 키 사용
+ */
+function getEncryptionKey(): string {
+  // Vite 환경 (클라이언트)
+  const viteKey = import.meta.env.VITE_WALLET_ENCRYPTION_KEY;
+  if (viteKey) {
+    console.log('✅ WALLET_ENCRYPTION_KEY 환경변수 로드됨, 길이:', (viteKey as string).length);
+    return viteKey as string;
+  }
+
+  // 기본값 (개발용)
+  const defaultKey = 'default-encryption-key-please-change-in-production';
+  console.warn('⚠️ WALLET_ENCRYPTION_KEY 환경변수 없음, 기본값 사용 (개발용)');
+  return defaultKey;
+}
 
 /**
  * 암호화된 Private Key 복호화
+ * Web Crypto API 사용 (백엔드와 동일)
  * AES-256-GCM 사용
  */
-export function decryptPrivateKey(encryptedData: string | any): string {
+export async function decryptPrivateKey(encryptedData: string | any): Promise<string> {
   try {
     // JSON 문자열인 경우 파싱
     let data: any;
@@ -14,79 +31,117 @@ export function decryptPrivateKey(encryptedData: string | any): string {
       data = encryptedData;
     }
 
-    // 환경변수에서 암호화 키 조회
-    const encryptionKey = process.env.VITE_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY;
-    if (!encryptionKey) {
-      throw new Error('ENCRYPTION_KEY 환경변수가 설정되지 않았습니다');
+    console.log('🔐 [해독 시작]', {
+      iv: Array.isArray(data.iv) ? `배열 길이 ${data.iv.length}` : typeof data.iv,
+      data: Array.isArray(data.data) ? `배열 길이 ${data.data.length}` : typeof data.data,
+      keys: Object.keys(data),
+      rawData: JSON.stringify(encryptedData).substring(0, 200)
+    });
+
+    const encryptionKey = getEncryptionKey();
+    console.log('🔑 [환경변수]', {
+      keyExists: Boolean(encryptionKey),
+      keyLength: encryptionKey?.length || 0,
+      isDefault: encryptionKey === 'default-encryption-key-please-change-in-production'
+    });
+
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    // 256-bit 키 생성 (백엔드와 동일)
+    console.log('🔐 [SHA-256 해싱]');
+    const keyMaterial = await crypto.subtle.digest(
+      'SHA-256',
+      encoder.encode(encryptionKey)
+    );
+
+    console.log('🔐 [키 import]');
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyMaterial,
+      'AES-GCM',
+      false,
+      ['decrypt']
+    );
+
+    // 데이터 검증
+    if (!Array.isArray(data.iv) || data.iv.length !== 12) {
+      throw new Error(`IV 길이 오류: ${data.iv?.length} (12이어야 함)`);
+    }
+    if (!Array.isArray(data.data) || data.data.length === 0) {
+      throw new Error(`암호화 데이터 오류: 길이 ${data.data?.length}`);
     }
 
-    // 키를 32바이트로 정규화 (SHA-256)
-    const key = crypto
-      .createHash('sha256')
-      .update(encryptionKey)
-      .digest();
+    const ivArray = new Uint8Array(data.iv);
+    const dataArray = new Uint8Array(data.data);
 
-    // iv와 데이터를 Buffer로 변환
-    const iv = Buffer.from(data.iv);
-    const encryptedBuffer = Buffer.from(data.data);
-    
-    // authTag 있으면 사용 (GCM mode)
-    let decipher;
-    if (data.authTag) {
-      decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-      decipher.setAuthTag(Buffer.from(data.authTag));
-    } else {
-      // Fallback: CBC mode
-      decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-    }
+    console.log('🔐 [decrypt 호출]', {
+      ivBytes: Array.from(ivArray).slice(0, 6),
+      dataBytes: Array.from(dataArray).slice(0, 6),
+      dataLength: dataArray.length
+    });
 
     // 복호화
-    let decrypted = decipher.update(encryptedBuffer);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: ivArray },
+      key,
+      dataArray
+    );
 
-    return decrypted.toString('utf-8');
+    const result = decoder.decode(decrypted);
+    console.log('✅ [복호화 성공]', { length: result.length, preview: result.substring(0, 50) });
+    return result;
   } catch (error: any) {
-    console.error('❌ Private Key 복호화 실패:', error.message);
-    throw new Error(`Private Key 복호화 실패: ${error.message}`);
+    console.error('❌ [복호화 실패]', {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: error.code,
+      errorFull: error.toString()
+    });
+    throw new Error(`Private Key 복호화 실패: ${error.message || error.name || '알 수 없는 오류'}`);
   }
 }
 
 /**
  * Private Key 암호화 (DB 저장용)
+ * Web Crypto API 사용 (백엔드와 동일)
  * AES-256-GCM 사용
  */
-export function encryptPrivateKey(privateKey: string): string {
+export async function encryptPrivateKey(privateKey: string): Promise<string> {
   try {
-    const encryptionKey = process.env.VITE_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY;
-    if (!encryptionKey) {
-      throw new Error('ENCRYPTION_KEY 환경변수가 설정되지 않았습니다');
-    }
+    const encryptionKey = getEncryptionKey();
+    const encoder = new TextEncoder();
+    const data = encoder.encode(privateKey);
 
-    // 키를 32바이트로 정규화
-    const key = crypto
-      .createHash('sha256')
-      .update(encryptionKey)
-      .digest();
+    // 256-bit 키 생성 (백엔드와 동일)
+    const keyMaterial = await crypto.subtle.digest(
+      'SHA-256',
+      encoder.encode(encryptionKey)
+    );
 
-    // 랜덤 IV 생성
-    const iv = crypto.randomBytes(16);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyMaterial,
+      'AES-GCM',
+      false,
+      ['encrypt']
+    );
 
-    // GCM mode로 암호화
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    let encrypted = cipher.update(privateKey, 'utf-8', 'binary');
-    encrypted += cipher.final('binary');
+    // 랜덤 IV 생성 (12바이트)
+    const iv = crypto.getRandomValues(new Uint8Array(12));
 
-    const authTag = cipher.getAuthTag();
+    // 암호화
+    const encrypted = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      data
+    );
 
-    // 결과를 JSON으로 인코딩
-    const result = {
+    // IV + 암호화된 데이터를 JSON으로 저장 (백엔드와 동일)
+    return JSON.stringify({
       iv: Array.from(iv),
-      data: Array.from(Buffer.from(encrypted, 'binary')),
-      authTag: Array.from(authTag),
-      algorithm: 'aes-256-gcm'
-    };
-
-    return JSON.stringify(result);
+      data: Array.from(new Uint8Array(encrypted))
+    });
   } catch (error: any) {
     console.error('❌ Private Key 암호화 실패:', error.message);
     throw new Error(`Private Key 암호화 실패: ${error.message}`);
